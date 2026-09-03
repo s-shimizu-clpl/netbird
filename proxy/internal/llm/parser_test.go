@@ -9,7 +9,7 @@ import (
 
 func TestParsers_ProviderNames(t *testing.T) {
 	parsers := Parsers()
-	require.Len(t, parsers, 3, "three built-in parsers expected")
+	require.Len(t, parsers, 4, "four built-in parsers expected")
 
 	names := make([]string, 0, len(parsers))
 	for _, p := range parsers {
@@ -18,6 +18,7 @@ func TestParsers_ProviderNames(t *testing.T) {
 	assert.Contains(t, names, "openai", "OpenAI parser should be registered")
 	assert.Contains(t, names, "anthropic", "Anthropic parser should be registered")
 	assert.Contains(t, names, "bedrock", "Bedrock parser should be registered")
+	assert.Contains(t, names, "gemini", "Gemini parser should be registered")
 }
 
 func TestDetectParser(t *testing.T) {

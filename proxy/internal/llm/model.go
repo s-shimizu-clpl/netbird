@@ -27,3 +27,11 @@ func NormalizeAnthropicModel(modelID string) string {
 func NormalizeVertexModel(modelID string) string {
 	return sharedllm.NormalizeVertexModel(modelID)
 }
+
+// NormalizeGeminiModel strips the "models/" resource prefix from a Gemini model
+// id so the resource name Google's listing reports matches the bare id the
+// inference path carries. Thin delegate to shared/llm for the same contract
+// reason as the three above.
+func NormalizeGeminiModel(modelID string) string {
+	return sharedllm.NormalizeGeminiModel(modelID)
+}

@@ -65,6 +65,7 @@ var strippedAuthHeaders = []string{
 	"Proxy-Authorization", // upstream proxy auth (defense-in-depth)
 	"x-api-key",           // Anthropic
 	"api-key",             // Azure OpenAI
+	"x-goog-api-key",      // Google Gemini
 	"X-Amz-Date",          // AWS SigV4 — strip client-supplied AWS signing material
 	"X-Amz-Security-Token",
 	"X-Amz-Content-Sha256",
@@ -175,6 +176,14 @@ func (m *Middleware) Invoke(_ context.Context, in *middleware.Input) (*middlewar
 				stripBedrockNamespace(out)
 			}
 		}), nil
+	}
+
+	// Gemini's generateContent family is path-routed the same way; its
+	// interactions endpoint carries the model in the body and falls through to
+	// the model lookup below.
+	if isGeminiPath(reqPath) {
+		route, outcome := m.matchGemini(reqPath, model, in.UserGroups)
+		return m.decide(route, outcome, surface, model, in.UserGroups, nil), nil
 	}
 
 	// GET /v1/models/{id} carries no body, so no model reaches the router in
@@ -333,6 +342,11 @@ func discoverableModels(route ProviderRoute, userGroups []string) ([]string, boo
 		}
 		if route.Vertex {
 			if _, ok := permitted[llm.NormalizeVertexModel(m)]; ok {
+				intersection[m] = struct{}{}
+			}
+		}
+		if route.Gemini {
+			if _, ok := permitted[llm.NormalizeGeminiModel(m)]; ok {
 				intersection[m] = struct{}{}
 			}
 		}
@@ -502,7 +516,7 @@ const modelListingPath = "/v1/models"
 // and a policy bound: the connection-warming probe carries no model list to
 // filter, and rewriting its host would send the warm-up to the wrong pool.
 func isListingPath(reqPath string) bool {
-	return reqPath == modelListingPath || isBedrockModelLessPath(reqPath)
+	return reqPath == modelListingPath || isBedrockModelLessPath(reqPath) || isGeminiModelLessPath(reqPath)
 }
 
 // isModelLessPath reports whether reqPath is a known non-inference endpoint
@@ -582,6 +596,38 @@ func isVertexPath(reqPath string) bool {
 		strings.Contains(reqPath, "/models/")
 }
 
+// geminiModelPathPrefixes are the API-version-scoped collection paths a Gemini
+// model hangs off. Both versions serve the same methods, and a client picks one
+// through its SDK's configuration rather than through NetBird.
+var geminiModelPathPrefixes = []string{"/v1beta/models/", "/v1/models/"}
+
+// geminiListingPath is Gemini's own model listing, which lives beside the
+// per-model paths rather than at the OpenAI-shaped "/v1/models".
+const geminiListingPath = "/v1beta/models"
+
+// isGeminiPath reports whether reqPath is a Gemini model endpoint:
+// /v1beta/models/{model}:{method}. The ":method" suffix is what separates it
+// from the OpenAI-shaped "/v1/models/{id}" lookup, which shares the "/v1"
+// prefix and is authorised through the model table instead.
+func isGeminiPath(reqPath string) bool {
+	for _, prefix := range geminiModelPathPrefixes {
+		rest, found := strings.CutPrefix(reqPath, prefix)
+		if !found {
+			continue
+		}
+		colon := strings.LastIndex(rest, ":")
+		return colon > 0 && colon < len(rest)-1 && !strings.Contains(rest[:colon], "/")
+	}
+	return false
+}
+
+// isGeminiModelLessPath reports whether reqPath is Gemini's model listing.
+// Clients read it at startup to populate a model picker, so it routes by path
+// to a Gemini provider rather than through the model table.
+func isGeminiModelLessPath(reqPath string) bool {
+	return reqPath == geminiListingPath
+}
+
 // bedrockNamespacePrefix is an optional gateway-namespace prefix some clients
 // place before the native Bedrock path to disambiguate it from other providers
 // that also use "/model/...". It is stripped before forwarding upstream.
@@ -637,7 +683,13 @@ func (m *Middleware) matchBedrock(reqPath, model string, userGroups []string) (P
 	return m.matchPathRoute(reqPath, model, userGroups, func(r ProviderRoute) bool { return r.Bedrock })
 }
 
-// matchPathRoute selects a path-routed provider (Vertex/Bedrock). These carry
+// matchGemini selects the Gemini provider authorised for the caller's groups
+// and claiming the requested model.
+func (m *Middleware) matchGemini(reqPath, model string, userGroups []string) (ProviderRoute, matchOutcome) {
+	return m.matchPathRoute(reqPath, model, userGroups, func(r ProviderRoute) bool { return r.Gemini })
+}
+
+// matchPathRoute selects a path-routed provider (Vertex/Bedrock/Gemini). These carry
 // the model in the URL, so the model/vendor table is bypassed — but the route's
 // configured Models allowlist is still enforced (empty Models = catch-all) so a
 // provider credential can't be used for models the operator didn't authorise.
@@ -726,10 +778,14 @@ func (m *Middleware) matchModelless(reqPath, method string, userGroups []string)
 		} else {
 			eligible = func(r ProviderRoute) bool { return r.Bedrock }
 		}
+	case isGeminiModelLessPath(reqPath):
+		eligible = func(r ProviderRoute) bool { return r.Gemini }
 	case isModelLessPath(reqPath):
 		// Vertex/Bedrock are path-routed and don't serve OpenAI-style
 		// model-listing endpoints; including them here could rewrite a
-		// GET /v1/models to an upstream that 404s it.
+		// GET /v1/models to an upstream that 404s it. Gemini stays eligible:
+		// generativelanguage.googleapis.com serves the listing under both API
+		// versions, so "/v1/models" answers there.
 		eligible = func(r ProviderRoute) bool { return !r.Vertex && !r.Bedrock }
 	default:
 		return ProviderRoute{}, matchOutcomeUnknownModel
@@ -877,6 +933,12 @@ func routeClaimsModel(route ProviderRoute, model string) bool {
 		// Vertex likewise: the parser strips the "@version" suffix from the
 		// path model, while the operator may register the versioned form.
 		if route.Vertex && llm.NormalizeVertexModel(candidate) == model {
+			return true
+		}
+		// Gemini likewise: the parser emits the bare model id from the path,
+		// while an operator who copied it from the listing registered the
+		// "models/"-prefixed resource name.
+		if route.Gemini && llm.NormalizeGeminiModel(candidate) == model {
 			return true
 		}
 		// A client may pin a dated Anthropic id ("claude-sonnet-4-5-20250929")

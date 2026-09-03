@@ -94,6 +94,13 @@ func (m middlewareImpl) Invoke(_ context.Context, in *middleware.Input) (*middle
 		return m.invokeBedrock(in, br), nil
 	}
 
+	// Google Gemini carries the model in the path too
+	// (/v1beta/models/{model}:generateContent). Its interactions endpoint puts
+	// the model in the body instead, and falls through to the parser below.
+	if gm, okg := parseGeminiPath(extractPath(in.URL)); okg {
+		return m.invokePathRouted(in, llm.ProviderNameGemini, gm.model, gm.stream), nil
+	}
+
 	// A path that names an API surface wins over the configured providerID:
 	// a gateway record pinned to "openai" still serves Claude Code on
 	// /v1/messages, and reading that body with the OpenAI parser loses the
@@ -322,15 +329,23 @@ func vertexPublisherVendor(publisher string) string {
 // invokeVertex emits the model/vendor/session/prompt for a Vertex publisher
 // request, using the publisher's parser to read the (vendor-native) body.
 func (m middlewareImpl) invokeVertex(in *middleware.Input, vx vertexRequest) *middleware.Output {
+	return m.invokePathRouted(in, vertexPublisherVendor(vx.publisher), vx.model, vx.stream)
+}
+
+// invokePathRouted emits the metadata for a surface that carries the model in
+// the URL rather than the body (Vertex, Bedrock, Gemini). The vendor selects
+// the parser that reads the body for a session id and the prompt; it is empty
+// only for a Vertex publisher with no parser, whose request is left unmetered
+// (and denied by the router) rather than billed on a guessed surface.
+func (m middlewareImpl) invokePathRouted(in *middleware.Input, vendor, model string, stream bool) *middleware.Output {
 	out := &middleware.Output{Decision: middleware.DecisionAllow}
-	vendor := vertexPublisherVendor(vx.publisher)
 
 	md := []middleware.KV{}
 	if vendor != "" {
 		md = append(md, middleware.KV{Key: middleware.KeyLLMProvider, Value: vendor})
 	}
-	md = append(md, middleware.KV{Key: middleware.KeyLLMModel, Value: vx.model})
-	md = append(md, middleware.KV{Key: middleware.KeyLLMStream, Value: strconv.FormatBool(vx.stream)})
+	md = append(md, middleware.KV{Key: middleware.KeyLLMModel, Value: model})
+	md = append(md, middleware.KV{Key: middleware.KeyLLMStream, Value: strconv.FormatBool(stream)})
 
 	var parser llm.Parser
 	if vendor != "" {
@@ -431,38 +446,55 @@ func parseBedrockPath(reqPath string) (bedrockRequest, bool) {
 // request. Bedrock is metered under the dedicated "bedrock" parser, which reads
 // both the InvokeModel and Converse response shapes.
 func (m middlewareImpl) invokeBedrock(in *middleware.Input, br bedrockRequest) *middleware.Output {
-	out := &middleware.Output{Decision: middleware.DecisionAllow}
-	md := []middleware.KV{
-		{Key: middleware.KeyLLMProvider, Value: llm.ProviderNameBedrock},
-		{Key: middleware.KeyLLMModel, Value: br.model},
-		{Key: middleware.KeyLLMStream, Value: strconv.FormatBool(br.stream)},
-	}
+	return m.invokePathRouted(in, llm.ProviderNameBedrock, br.model, br.stream)
+}
 
-	parser, _ := llm.ParserByName(llm.ProviderNameBedrock)
-	sessionID := sessionIDFromHeaders(in.Headers)
-	if sessionID == "" && parser != nil {
-		sessionID = parser.ExtractSessionID(in.Body)
-	}
-	if sessionID != "" {
-		md = append(md, middleware.KV{Key: middleware.KeyLLMSessionID, Value: sessionID})
-	}
-	md = appendAgentIDs(md, in.Headers)
+// geminiRequest is the model + streaming flag extracted from a Gemini model
+// path. Like Vertex and Bedrock, the model is a URL segment rather than a body
+// field, and the method name is what says whether the reply streams.
+type geminiRequest struct {
+	model  string
+	stream bool
+}
 
-	promptTruncated := false
-	if parser != nil && m.capturePrompt {
-		var prompt string
-		prompt, promptTruncated = truncatePrompt(parser.ExtractPrompt(in.Body))
-		if prompt != "" {
-			if m.redactPii {
-				prompt = llm_guardrail.RedactPII(prompt)
-				var rt bool
-				prompt, rt = truncatePrompt(prompt)
-				promptTruncated = promptTruncated || rt
-			}
-			md = append(md, middleware.KV{Key: middleware.KeyLLMRequestPromptRaw, Value: prompt})
+// geminiVersionedModelsPrefixes are the API-version-scoped collection paths a
+// Gemini model hangs off. The listing endpoint shares the prefix, so a path is
+// only a model request once it also carries the ":method" suffix.
+var geminiVersionedModelsPrefixes = []string{"/v1beta/models/", "/v1/models/"}
+
+// parseGeminiPath extracts the model and streaming flag from a Gemini model
+// endpoint:
+//
+//	/v1beta/models/{model}:{method}
+//
+// method is generateContent, streamGenerateContent, countTokens, embedContent
+// or batchEmbedContents. The "/v1/models/{id}" per-model lookup carries no
+// ":method" and is deliberately not claimed here: it is an OpenAI-shaped path
+// the router authorises on its own.
+func parseGeminiPath(reqPath string) (geminiRequest, bool) {
+	var rest string
+	for _, prefix := range geminiVersionedModelsPrefixes {
+		if strings.HasPrefix(reqPath, prefix) {
+			rest = reqPath[len(prefix):]
+			break
 		}
 	}
-	md = appendCaptureTruncated(md, promptTruncated, in.BodyTruncated)
-	out.Metadata = md
-	return out
+	if rest == "" {
+		return geminiRequest{}, false
+	}
+	colon := strings.LastIndex(rest, ":")
+	if colon <= 0 || colon == len(rest)-1 {
+		return geminiRequest{}, false
+	}
+	model, method := rest[:colon], rest[colon+1:]
+	// A method hangs off the model directly, so a "/" in between means the
+	// segment names a sub-collection rather than a model.
+	if strings.Contains(model, "/") {
+		return geminiRequest{}, false
+	}
+	model = llm.NormalizeGeminiModel(model)
+	if model == "" {
+		return geminiRequest{}, false
+	}
+	return geminiRequest{model: model, stream: strings.HasPrefix(method, "stream")}, true
 }

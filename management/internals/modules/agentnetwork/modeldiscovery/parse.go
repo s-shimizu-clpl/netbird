@@ -28,6 +28,8 @@ func parseListing(shape catalog.ListingShape, body []byte) ([]listedModel, error
 		return parseBedrockInferenceProfiles(body)
 	case catalog.ShapeVertexPublisherModels:
 		return parseVertexPublisherModels(body)
+	case catalog.ShapeGeminiModels:
+		return parseGeminiModels(body)
 	default:
 		return nil, fmt.Errorf("no parser for listing shape %q", shape)
 	}
@@ -118,6 +120,33 @@ func parseVertexPublisherModels(body []byte) ([]listedModel, error) {
 	return out, nil
 }
 
+// parseGeminiModels reads {"models":[{"name":"models/…","displayName":…}]}.
+//
+// The name is a resource path whose last segment is the id the inference path
+// carries, so the "models/" prefix is dropped: reporting the resource name
+// would hand the operator an id that does not match what a request will be
+// metered under.
+func parseGeminiModels(body []byte) ([]listedModel, error) {
+	var doc struct {
+		Models []struct {
+			Name        string `json:"name"`
+			DisplayName string `json:"displayName"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return nil, fmt.Errorf("%w: decode gemini model listing: %w", ErrUnparseableListing, err)
+	}
+	out := make([]listedModel, 0, len(doc.Models))
+	for _, entry := range doc.Models {
+		id := sharedllm.NormalizeGeminiModel(entry.Name)
+		if id == "" {
+			continue
+		}
+		out = append(out, listedModel{id: id, label: entry.DisplayName})
+	}
+	return out, nil
+}
+
 // normalizeForPricing maps a vendor's wire id onto the key the catalog prices
 // it under. It mirrors the synthesiser's normalizePricingModelID: the two must
 // agree, or a model reported here as priced would meter at the default rate
@@ -128,6 +157,8 @@ func normalizeForPricing(catalogProviderID, modelID string) string {
 		return sharedllm.NormalizeBedrockModel(modelID)
 	case catalog.IsVertexPathStyle(catalogProviderID):
 		return sharedllm.NormalizeVertexModel(modelID)
+	case catalog.IsGeminiPathStyle(catalogProviderID):
+		return sharedllm.NormalizeGeminiModel(modelID)
 	default:
 		return modelID
 	}

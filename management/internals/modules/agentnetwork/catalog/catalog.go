@@ -142,6 +142,10 @@ const (
 	// name is a resource path and the invocable id is its last segment joined
 	// to a separate versionId field.
 	ShapeVertexPublisherModels ListingShape = "vertex_publisher_models"
+	// ShapeGeminiModels is {"models":[{"name":"models/…","displayName":…}]} —
+	// Google's generative-language listing, whose name is the resource form of
+	// the id the inference path carries.
+	ShapeGeminiModels ListingShape = "gemini_models"
 )
 
 // Discovery describes one vendor's model-listing endpoint.
@@ -157,10 +161,10 @@ const (
 // one from the caller is also what keeps this from being an open proxy: the
 // only hosts management will dial are the ones written here.
 type Discovery struct {
-	Host            string
-	Path            string
-	Query           string
-	Shape           ListingShape
+	Host  string
+	Path  string
+	Query string
+	Shape ListingShape
 	// ExactModelsOnly omits wildcard patterns from listings when NetBird's
 	// provider model rows cannot represent the vendor's matching semantics.
 	ExactModelsOnly bool
@@ -504,9 +508,11 @@ var providers = []Provider{
 		// mirror the first-party Anthropic catalog (LiteLLM vertex_ai/claude-*
 		// confirms the same per-token rates; cross-region profiles in eu/apac
 		// carry a ~10% premium that base pricing does not model). Gemini (the
-		// google publisher) is intentionally omitted until a Gemini parser
-		// exists — the router denies unmeterable publishers rather than forward
-		// them uncounted.
+		// google publisher) is intentionally omitted: the Gemini parser added
+		// for gemini_api reads the AI Studio surface, and wiring it to the
+		// Vertex publisher path needs its own pricing lineup (Vertex bills
+		// Gemini at different rates). Until then the router denies unmeterable
+		// publishers rather than forward them uncounted.
 		Models: []Model{
 			{ID: "claude-opus-5", Label: "Claude Opus 5 (Vertex)", InputPer1k: 0.005, OutputPer1k: 0.025, CacheReadPer1k: 0.0005, CacheCreationPer1k: 0.00625, ContextWindow: 1000000},
 			{ID: "claude-sonnet-5", Label: "Claude Sonnet 5 (Vertex)", InputPer1k: 0.003, OutputPer1k: 0.015, CacheReadPer1k: 0.0003, CacheCreationPer1k: 0.00375, ContextWindow: 1000000},
@@ -518,6 +524,53 @@ var providers = []Provider{
 			{ID: "claude-sonnet-4-6", Label: "Claude Sonnet 4.6 (Vertex)", InputPer1k: 0.003, OutputPer1k: 0.015, CacheReadPer1k: 0.0003, CacheCreationPer1k: 0.00375, ContextWindow: 1000000},
 			{ID: "claude-sonnet-4-5", Label: "Claude Sonnet 4.5 (Vertex)", InputPer1k: 0.003, OutputPer1k: 0.015, CacheReadPer1k: 0.0003, CacheCreationPer1k: 0.00375, ContextWindow: 200000},
 			{ID: "claude-haiku-4-5", Label: "Claude Haiku 4.5 (Vertex)", InputPer1k: 0.001, OutputPer1k: 0.005, CacheReadPer1k: 0.0001, CacheCreationPer1k: 0.00125, ContextWindow: 200000},
+		},
+	},
+	{
+		ID:                 "gemini_api",
+		Kind:               KindProvider,
+		Name:               "Google Gemini API",
+		Description:        "Gemini models on Google AI Studio",
+		DefaultHost:        "generativelanguage.googleapis.com",
+		AuthHeaderName:     "x-goog-api-key",
+		AuthHeaderTemplate: "${API_KEY}",
+		DefaultContentType: "application/json",
+		BrandColor:         "#1A73E8",
+		// The listing is served from the same host as inference and answers
+		// with every model the key can reach, generative and embedding alike.
+		// pageSize is maxed out because a picker wants one call, not a cursor.
+		Discovery: &Discovery{
+			Path:  "/v1beta/models",
+			Query: "pageSize=1000",
+			Shape: ShapeGeminiModels,
+		},
+		ParserID:        "gemini",
+		PricingSurfaces: []string{"gemini"},
+		// Rates from ai.google.dev/gemini-api/docs/pricing (paid tier, USD per
+		// 1k tokens), text/image/video input where a modality split exists —
+		// audio input costs more on several models and base pricing does not
+		// model it. CachedInputPer1k is Google's context-cache rate: the count
+		// it applies to (cachedContentTokenCount) is a SUBSET of the prompt
+		// tokens, which is the OpenAI shape, so the cost meter bills it there.
+		// The per-hour cache STORAGE charge is not per-token and is not
+		// modelled at all. Gemini 3.8/3.7 Flash carry promotional rates through
+		// 2026-12-31, after which input/output double — revisit then.
+		// Context windows are the 1,048,576-token input limit the 2.5 and 3.x
+		// families share; the embedding models cap far lower.
+		Models: []Model{
+			{ID: "gemini-3.8-flash", Label: "Gemini 3.8 Flash", InputPer1k: 0.00075, OutputPer1k: 0.00375, CachedInputPer1k: 0.000075, ContextWindow: 1048576},
+			{ID: "gemini-3.7-flash", Label: "Gemini 3.7 Flash", InputPer1k: 0.00075, OutputPer1k: 0.00375, CachedInputPer1k: 0.000075, ContextWindow: 1048576},
+			{ID: "gemini-3.6-flash", Label: "Gemini 3.6 Flash", InputPer1k: 0.0015, OutputPer1k: 0.0075, CachedInputPer1k: 0.00015, ContextWindow: 1048576},
+			{ID: "gemini-3.5-flash", Label: "Gemini 3.5 Flash", InputPer1k: 0.0015, OutputPer1k: 0.009, CachedInputPer1k: 0.00015, ContextWindow: 1048576},
+			{ID: "gemini-3.5-flash-lite", Label: "Gemini 3.5 Flash-Lite", InputPer1k: 0.0003, OutputPer1k: 0.0025, CachedInputPer1k: 0.00003, ContextWindow: 1048576},
+			{ID: "gemini-3.1-flash-lite", Label: "Gemini 3.1 Flash-Lite", InputPer1k: 0.00025, OutputPer1k: 0.0015, CachedInputPer1k: 0.000025, ContextWindow: 1048576},
+			{ID: "gemini-3.1-pro-preview", Label: "Gemini 3.1 Pro (preview)", InputPer1k: 0.002, OutputPer1k: 0.012, CachedInputPer1k: 0.0002, ContextWindow: 1048576},
+			{ID: "gemini-3-flash-preview", Label: "Gemini 3 Flash (preview)", InputPer1k: 0.0005, OutputPer1k: 0.003, CachedInputPer1k: 0.00005, ContextWindow: 1048576},
+			{ID: "gemini-2.5-pro", Label: "Gemini 2.5 Pro", InputPer1k: 0.00125, OutputPer1k: 0.010, CachedInputPer1k: 0.000125, ContextWindow: 1048576},
+			{ID: "gemini-2.5-flash", Label: "Gemini 2.5 Flash", InputPer1k: 0.0003, OutputPer1k: 0.0025, CachedInputPer1k: 0.00003, ContextWindow: 1048576},
+			{ID: "gemini-2.5-flash-lite", Label: "Gemini 2.5 Flash-Lite", InputPer1k: 0.0001, OutputPer1k: 0.0004, CachedInputPer1k: 0.00001, ContextWindow: 1048576},
+			{ID: "gemini-embedding-001", Label: "Gemini Embedding 001", InputPer1k: 0.00015, OutputPer1k: 0, ContextWindow: 2048},
+			{ID: "gemini-embedding-2-preview", Label: "Gemini Embedding 2 (preview)", InputPer1k: 0.0002, OutputPer1k: 0, ContextWindow: 2048},
 		},
 	},
 	{
@@ -933,6 +986,15 @@ func IsVertexPathStyle(providerID string) bool {
 // converse-stream) rather than the body, so the proxy routes it by path.
 func IsBedrockPathStyle(providerID string) bool {
 	return providerID == "bedrock_api"
+}
+
+// IsGeminiPathStyle reports whether a provider uses the Google Gemini request
+// shape — the model is carried in the URL path
+// (/v1beta/models/{model}:generateContent) rather than the body, so the proxy
+// routes it by path. Its interactions endpoint is the exception and carries the
+// model in the body like any other provider.
+func IsGeminiPathStyle(providerID string) bool {
+	return providerID == "gemini_api"
 }
 
 // ToAPIResponse renders a catalog provider as the API representation.

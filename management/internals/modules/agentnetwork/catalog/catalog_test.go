@@ -84,3 +84,32 @@ func TestAgentgatewayCatalogAPIResponse(t *testing.T) {
 	assert.Equal(t, "x-netbird-user-id", resp.IdentityInjection.HeaderPair.EndUserIdHeader)
 	assert.Equal(t, "x-netbird-groups", resp.IdentityInjection.HeaderPair.TagsHeader)
 }
+
+func TestGeminiCatalogEntry(t *testing.T) {
+	entry, ok := Lookup("gemini_api")
+	require.True(t, ok, "gemini_api must be available in the provider catalog")
+
+	assert.Equal(t, KindProvider, entry.Kind, "AI Studio is a first-party vendor API")
+	assert.Equal(t, "generativelanguage.googleapis.com", entry.DefaultHost)
+	assert.Equal(t, "x-goog-api-key", entry.AuthHeaderName,
+		"Gemini takes the key in its own header, not Authorization")
+	assert.Equal(t, "${API_KEY}", entry.AuthHeaderTemplate)
+	assert.Equal(t, "gemini", entry.ParserID)
+	assert.Equal(t, []string{"gemini"}, entry.PricingSurfaces)
+	assert.True(t, IsGeminiPathStyle(entry.ID),
+		"generateContent carries the model in the path, so the proxy routes it by path")
+
+	require.NotNil(t, entry.Discovery)
+	assert.Empty(t, entry.Discovery.Host, "listing and inference share one host")
+	assert.Equal(t, "/v1beta/models", entry.Discovery.Path)
+	assert.Equal(t, ShapeGeminiModels, entry.Discovery.Shape)
+
+	require.NotEmpty(t, entry.Models)
+	for _, m := range entry.Models {
+		assert.NotContains(t, m.ID, "models/",
+			"models must be registered under the bare id the inference path carries: %s", m.ID)
+		assert.Zero(t, m.CacheReadPer1k,
+			"Gemini has no additive cache buckets; its cache rate is the OpenAI-shaped subset: %s", m.ID)
+		assert.Zero(t, m.CacheCreationPer1k, "%s", m.ID)
+	}
+}

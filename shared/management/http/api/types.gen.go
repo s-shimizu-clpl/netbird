@@ -2368,7 +2368,7 @@ type AgentNetworkProvider struct {
 	// Name Display name shown in the dashboard.
 	Name string `json:"name"`
 
-	// ProviderId Catalog identifier for the upstream AI provider (e.g. openai_api, anthropic_api, azure_openai_api, bedrock_api, vertex_ai_api, mistral_api, custom).
+	// ProviderId Catalog identifier for the upstream AI provider (e.g. openai_api, anthropic_api, azure_openai_api, bedrock_api, vertex_ai_api, gemini_api, mistral_api, custom).
 	ProviderId string `json:"provider_id"`
 
 	// SkipTlsVerification Whether upstream TLS certificate verification is skipped when the proxy dials this provider's URL. Intended for self-hosted / internal gateways behind a private or self-signed certificate.
@@ -2428,7 +2428,7 @@ type AgentNetworkProviderRequest struct {
 	// Name Display name for the provider.
 	Name string `json:"name"`
 
-	// ProviderId Catalog identifier for the upstream AI provider (e.g. openai_api, anthropic_api, azure_openai_api, bedrock_api, vertex_ai_api, mistral_api, custom).
+	// ProviderId Catalog identifier for the upstream AI provider (e.g. openai_api, anthropic_api, azure_openai_api, bedrock_api, vertex_ai_api, gemini_api, mistral_api, custom).
 	ProviderId string `json:"provider_id"`
 
 	// SkipTlsVerification Skip upstream TLS certificate verification when the proxy dials this provider's URL. For self-hosted / internal gateways behind a private or self-signed certificate. Defaults to false.

@@ -26,6 +26,8 @@ func accumulateStream(provider string, body []byte) (llm.Usage, string) {
 		return accumulateAnthropicStream(body)
 	case llm.ProviderNameBedrock:
 		return accumulateBedrockStream(body)
+	case llm.ProviderNameGemini:
+		return accumulateGeminiStream(body)
 	default:
 		return llm.Usage{}, ""
 	}

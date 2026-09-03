@@ -5136,7 +5136,7 @@ components:
           example: "ainp_d1m3kebd9pcs0c1pnu7g"
         provider_id:
           type: string
-          description: Catalog identifier for the upstream AI provider (e.g. openai_api, anthropic_api, azure_openai_api, bedrock_api, vertex_ai_api, mistral_api, custom).
+          description: Catalog identifier for the upstream AI provider (e.g. openai_api, anthropic_api, azure_openai_api, bedrock_api, vertex_ai_api, gemini_api, mistral_api, custom).
           example: "openai_api"
         name:
           type: string
@@ -5211,7 +5211,7 @@ components:
       properties:
         provider_id:
           type: string
-          description: Catalog identifier for the upstream AI provider (e.g. openai_api, anthropic_api, azure_openai_api, bedrock_api, vertex_ai_api, mistral_api, custom).
+          description: Catalog identifier for the upstream AI provider (e.g. openai_api, anthropic_api, azure_openai_api, bedrock_api, vertex_ai_api, gemini_api, mistral_api, custom).
           example: "openai_api"
         name:
           type: string

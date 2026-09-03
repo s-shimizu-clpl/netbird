@@ -87,6 +87,13 @@ const vertexListing = `{"publisherModels":[
   {"name":"publishers/anthropic/models/claude-sonnet-4-5","versionId":"20250929","launchStage":"GA"}
 ]}`
 
+const geminiListing = `{"models":[
+  {"name":"models/gemini-3.8-flash","displayName":"Gemini 3.8 Flash","inputTokenLimit":1048576,
+   "supportedGenerationMethods":["generateContent","streamGenerateContent"]},
+  {"name":"models/gemini-embedding-001","displayName":"Gemini Embedding 001","inputTokenLimit":2048,
+   "supportedGenerationMethods":["embedContent"]}
+]}`
+
 func TestFetchOpenAIListing(t *testing.T) {
 	cl, tr := newStubClient(http.StatusOK, openAIListing)
 
@@ -229,6 +236,30 @@ func TestFetchVertexJoinsNameAndVersion(t *testing.T) {
 	// those across two fields in the listing.
 	assert.Equal(t, []string{"claude-3-opus@20240229", "claude-sonnet-4-5@20250929"}, ids(models))
 	assert.Equal(t, "claude-3-opus", models[0].Label)
+}
+
+func TestFetchGeminiStripsTheResourcePrefix(t *testing.T) {
+	cl, tr := newStubClient(http.StatusOK, geminiListing)
+
+	models, err := cl.Fetch(context.Background(), Request{
+		CatalogID:   "gemini_api",
+		UpstreamURL: "https://generativelanguage.googleapis.com",
+		APIKey:      "AIza-test",
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
+		tr.got.URL.String())
+	assert.Equal(t, "AIza-test", tr.got.Header.Get("x-goog-api-key"),
+		"Gemini takes the credential in its own header, not Authorization")
+
+	// The listing reports resource names; the inference path carries the last
+	// segment, so that is the only form an operator can register.
+	assert.Equal(t, []string{"gemini-3.8-flash", "gemini-embedding-001"}, ids(models))
+	assert.Equal(t, "Gemini 3.8 Flash", models[0].Label)
+	for _, m := range models {
+		assert.True(t, m.PricingKnown, "both models are in the shipped catalog: %s", m.ID)
+	}
 }
 
 func TestFetchSurfacesTheVendorStatus(t *testing.T) {

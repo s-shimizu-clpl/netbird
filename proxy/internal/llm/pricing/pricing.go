@@ -182,7 +182,7 @@ func newCosts(input, cachedInput, cacheCreation, output float64) Costs {
 //
 // Provider-shape semantics for cached / cache-creation counts:
 //
-//   - "openai": cachedInput is a SUBSET of inTokens. The cached portion is
+//   - "openai", "gemini": cachedInput is a SUBSET of inTokens. The cached portion is
 //     billed at CachedInputPer1K (or InputPer1K when no override), and the
 //     non-cached remainder of inTokens at InputPer1K. cacheCreation is
 //     ignored (OpenAI has no analogue).
@@ -209,7 +209,11 @@ func EntryCosts(entry Entry, surface string, inTokens, outTokens, cachedInput, c
 	}
 	output := (float64(outTokens) / 1000.0) * entry.OutputPer1K
 	switch surface {
-	case "openai":
+	case "openai", "gemini":
+		// Gemini shares the OpenAI shape: cachedContentTokenCount is counted
+		// inside promptTokenCount, and Google bills that portion at the
+		// context-cache rate.
+		//
 		// cachedInput is a subset of inTokens; clamp so a malformed
 		// upstream (cached > total) can't produce a negative remainder.
 		clamped := cachedInput

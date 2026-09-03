@@ -267,6 +267,26 @@ func TestFilterBedrockInferenceProfiles(t *testing.T) {
 // the filter cannot parse must reach the client exactly as the upstream sent
 // it, rather than being rewritten into something shorter and wrong.
 func TestFilterLeavesUnknownEnvelopesAlone(t *testing.T) {
-	_, ok := filterListingBody([]byte(`{"models":[{"name":"something"}]}`), map[string]struct{}{})
+	_, ok := filterListingBody([]byte(`{"deployments":[{"name":"something"}]}`), map[string]struct{}{})
 	assert.False(t, ok)
+}
+
+// TestFilterBoundsGeminiListing: Gemini reports resource names ("models/x")
+// while a provider record registers the bare id the inference path carries, so
+// the two forms must still compare equal or the picker is bounded to nothing.
+func TestFilterBoundsGeminiListing(t *testing.T) {
+	body := []byte(`{"models":[{"name":"models/gemini-3.8-flash"},{"name":"models/gemini-2.5-pro"}]}`)
+	permitted := map[string]struct{}{"gemini-3.8-flash": {}}
+
+	out, ok := filterListingBody(body, permitted)
+	require.True(t, ok, "the gemini envelope must be recognised")
+
+	var doc struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	require.NoError(t, json.Unmarshal(out, &doc))
+	require.Len(t, doc.Models, 1, "only the permitted model survives")
+	assert.Equal(t, "models/gemini-3.8-flash", doc.Models[0].Name, "the entry is kept verbatim")
 }

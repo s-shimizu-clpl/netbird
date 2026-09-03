@@ -121,7 +121,11 @@ func TestEntryCosts_SurfaceSelectsFormula(t *testing.T) {
 	bedrock := EntryCosts(e, "bedrock", 1000, 0, 400, 300)
 	assert.InDelta(t, anthropic.TotalUSD, bedrock.TotalUSD, 1e-12, "bedrock shares the anthropic formula")
 
-	other := EntryCosts(e, "gemini", 1000, 0, 400, 300)
+	gemini := EntryCosts(e, "gemini", 1000, 0, 400, 300)
+	assert.InDelta(t, openai.TotalUSD, gemini.TotalUSD, 1e-12,
+		"gemini shares the openai formula: cachedContentTokenCount is a subset of the prompt tokens")
+
+	other := EntryCosts(e, "vllm", 1000, 0, 400, 300)
 	assert.InDelta(t, 0.002, other.TotalUSD, 1e-12, "unknown surface: cache counts ignored")
 }
 

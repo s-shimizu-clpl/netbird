@@ -100,13 +100,15 @@ func isPlainJSONListing(resp *http.Response) bool {
 // listingEnvelopes maps a listing's wrapper key to the field naming the model
 // id inside it. Vendors did not converge on one shape: OpenAI's is what
 // Anthropic adopted, while Bedrock returns inference-profile summaries under a
-// key of its own. A body matching none of these is forwarded untouched.
+// key of its own, and Gemini returns resource names under "models".
+// A body matching none of these is forwarded untouched.
 var listingEnvelopes = []struct {
 	key     string
 	idField string
 }{
 	{"data", "id"},
 	{"inferenceProfileSummaries", "inferenceProfileId"},
+	{"models", "name"},
 }
 
 // filterListingBody returns the listing with unauthorised entries removed.
@@ -205,6 +207,11 @@ func modelIDForms(id string) []string {
 	// carry neither, so this costs nothing on the other surfaces.
 	if bedrock := sharedllm.NormalizeBedrockModel(id); bedrock != id {
 		forms = append(forms, bedrock)
+	}
+	// A Gemini listing returns resource names ("models/gemini-3.8-flash") while
+	// the record registers the bare id the inference path carries.
+	if gemini := sharedllm.NormalizeGeminiModel(id); gemini != id {
+		forms = append(forms, gemini)
 	}
 	if slash := strings.Index(id, "/"); slash > 0 {
 		if _, ok := gatewayNamespaces[id[:slash]]; ok {

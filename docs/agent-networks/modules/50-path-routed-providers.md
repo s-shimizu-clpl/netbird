@@ -1,4 +1,4 @@
-# path-routed providers — Vertex AI + Bedrock
+# path-routed providers — Vertex AI + Bedrock + Gemini
 
 This guide pulls the **path-routed** provider story together in one place
 because it crosses the catalog, the synthesiser, the request parser, and the
@@ -11,7 +11,7 @@ and the synthesiser's catalog → `ProviderRoute` mapping
 
 Sibling modules: [31-proxy-middleware-builtin.md](31-proxy-middleware-builtin.md)
 (router + request parser) and [32-proxy-llm-parsers.md](32-proxy-llm-parsers.md)
-(Bedrock parser + pricing).
+(Bedrock and Gemini parsers + pricing).
 
 ---
 
@@ -19,21 +19,22 @@ Sibling modules: [31-proxy-middleware-builtin.md](31-proxy-middleware-builtin.md
 
 Most catalog providers carry the model in the request **body** (`{"model": …}`),
 so `llm_router` selects an upstream by matching the model name against each
-provider's `Models` claim. Two providers instead carry the model in the **URL
+provider's `Models` claim. Three providers instead carry the model in the **URL
 path**, so they are routed by path before the model/vendor table is consulted:
 
 | Catalog id | Style flag | Request path shape |
 |---|---|---|
 | `vertex_ai_api` | `IsVertexPathStyle` → `ProviderRoute.Vertex` | `/v1/projects/{project}/locations/{region}/publishers/{publisher}/models/{model}:{action}` |
 | `bedrock_api` | `IsBedrockPathStyle` → `ProviderRoute.Bedrock` | `/model/{modelId}/{action}` (optionally behind `/bedrock`) |
+| `gemini_api` | `IsGeminiPathStyle` → `ProviderRoute.Gemini` | `/v1beta/models/{model}:{method}` (the `interactions` endpoint is body-routed) |
 
 The catalog declares the style with
-[`catalog.IsVertexPathStyle` / `catalog.IsBedrockPathStyle`](../../../management/server/agentnetwork/catalog/catalog.go)
+[`catalog.IsVertexPathStyle` / `catalog.IsBedrockPathStyle` / `catalog.IsGeminiPathStyle`](../../../management/server/agentnetwork/catalog/catalog.go)
 and the synthesiser copies the result onto the router route as the `Vertex` /
-`Bedrock` booleans
-([synthesizer.go:450-451](../../../management/server/agentnetwork/synthesizer.go)).
-On the request leg `llm_router.Invoke` dispatches `isVertexPath` / `isBedrockPath`
-**before** the model lookup
+`Bedrock` / `Gemini` booleans
+([synthesizer.go](../../../management/server/agentnetwork/synthesizer.go)).
+On the request leg `llm_router.Invoke` dispatches `isVertexPath` /
+`isBedrockPath` / `isGeminiPath` **before** the model lookup
 ([llm_router/middleware.go:138-216](../../../proxy/internal/middleware/builtin/llm_router/middleware.go))
 so a model the parser extracted from the path can't be claimed by a same-vendor
 *body-routed* provider (e.g. `claude-*` on `api.anthropic.com`).
@@ -99,8 +100,9 @@ surface via `vertexPublisherVendor`:
 `llm_policy.unmeterable_publisher` (403) rather than forwarding the request
 uncounted — serving it would bypass token / budget metering
 ([llm_router/middleware.go:144-162, 712-728](../../../proxy/internal/middleware/builtin/llm_router/middleware.go)).
-A Gemini parser would lift this restriction; until then the `google` publisher
-is omitted from the catalog.
+The Gemini parser added for `gemini_api` reads the AI Studio surface rather than
+the Vertex publisher path, so the `google` publisher stays omitted from the
+catalog until Vertex Gemini gets its own priced lineup.
 
 > Caveat: cross-region inference profiles in `eu` / `apac` carry a ~10% price
 > premium that the base per-token rates do **not** model — cost annotations for
@@ -185,6 +187,70 @@ When the prefix is present, the router sets
 (`/model/...`) is what reaches `bedrock-runtime.<region>.amazonaws.com`
 ([llm_router/middleware.go:168-184, 320-348](../../../proxy/internal/middleware/builtin/llm_router/middleware.go)).
 
+## Google Gemini (`gemini_api`)
+
+### Catalog entry
+
+`KindProvider`, `ParserID: "gemini"`, pricing surface `"gemini"`, upstream
+`generativelanguage.googleapis.com`. Unlike Vertex and Bedrock the catalog does
+name a parser: the surface is unambiguous from the entry, and the request
+middleware only needs the path to recover the **model**, not the vendor.
+
+### Credential — a static API key in Google's own header
+
+`AuthHeaderName: "x-goog-api-key"`, template `${API_KEY}`. Gemini does not read
+`Authorization`, so `x-goog-api-key` joins the router's stripped-header list:
+without it, a client that supplies its own key on a provider record with an
+empty credential would reach Google on that key.
+
+Gemini also accepts the key as a `?key=` query parameter, which the mutation
+framework cannot strip. Such a request is still authorised and metered — the
+router matches the model and the response parser reads the usage — but it bills
+against the caller's own key rather than the operator's.
+
+### Two request shapes, one provider record
+
+| Endpoint | Model lives in | Routed by |
+|---|---|---|
+| `/v1beta/models/{model}:generateContent` (and `:streamGenerateContent`, `:countTokens`, `:embedContent`) | URL path | `isGeminiPath` → `ProviderRoute.Gemini` |
+| `/v1beta/interactions` | request body (`{"model": …}`) | the ordinary model/vendor table |
+
+`parseGeminiPath` claims a path only once it carries a `:{method}` suffix, which
+is what keeps it off the OpenAI-shaped `/v1/models` listing and `/v1/models/{id}`
+lookup that share the `/v1/models` prefix.
+
+### Metering
+
+`promptTokenCount` already **contains** `cachedContentTokenCount`, so Gemini
+bills on the OpenAI subset formula rather than Anthropic's additive one
+([pricing.go](../../../proxy/internal/llm/pricing/pricing.go)).
+`thoughtsTokenCount` is additive and billed at the output rate, so it joins the
+output bucket. Google's per-hour context-cache **storage** charge is not a
+per-token rate and is not modelled at all; an operator relying on large cached
+contexts will see a NetBird estimate below the Google invoice by that amount.
+
+### Model id form
+
+The listing reports resource names (`models/gemini-3.8-flash`) while the
+inference path carries the bare id. `NormalizeGeminiModel` strips the prefix, and
+`routeClaimsModel` applies it to the registered ids too, so a record registered
+from either form routes identically.
+
+### Model listing
+
+Gemini serves its listing at `/v1beta/models`, not `/v1/models`, so
+`matchModelless` routes that path to Gemini routes specifically. The response
+envelope is `{"models":[{"name":"models/…"}]}`, which the proxy's discovery
+filter bounds to the caller's permitted models the same way it bounds the OpenAI
+and Bedrock envelopes
+([discovery_filter.go](../../../proxy/internal/proxy/discovery_filter.go)).
+
+### Not covered: Gemini on Vertex
+
+The `google` publisher on `vertex_ai_api` is still denied as an unmeterable
+publisher. The parser added here reads the AI Studio surface; Vertex prices
+Gemini differently and would need its own catalog lineup before the publisher
+can be metered.
 ## Model allowlist on path-routed providers
 
 Because the model lives in the URL rather than the body, a path-routed provider
@@ -192,7 +258,7 @@ credential could otherwise be used for any model the upstream supports. The
 router still enforces the route's `Models` allowlist via `matchPathRoute`
 ([llm_router/middleware.go:370-416](../../../proxy/internal/middleware/builtin/llm_router/middleware.go)):
 
-1. Filter to routes of the matching style (`Vertex` / `Bedrock`).
+1. Filter to routes of the matching style (`Vertex` / `Bedrock` / `Gemini`).
 2. Filter to routes whose `AllowedGroupIDs` authorise the caller's groups
    (else `no_authorised_provider`).
 3. Filter to routes that **claim the requested model**. As with body-routed
@@ -200,14 +266,17 @@ router still enforces the route's `Models` allowlist via `matchPathRoute`
    a non-empty list serves only the listed models (else `model_not_routable`).
 4. Multiple survivors disambiguate by longest `UpstreamPath` prefix match.
 
-So an operator who lists explicit models on a Vertex/Bedrock provider gets a
-hard allowlist; an operator who leaves `Models` empty accepts every model the
-upstream serves (still subject to the unmeterable-publisher gate on Vertex).
+So an operator who lists explicit models on a Vertex/Bedrock/Gemini provider
+gets a hard allowlist; an operator who leaves `Models` empty accepts every model
+the upstream serves (still subject to the unmeterable-publisher gate on Vertex).
 
 Model-less OpenAI endpoints (`GET /v1/models`) are **never** routed to a
-Vertex/Bedrock provider — `matchModelless` skips path-routed routes
-([llm_router/middleware.go:427-462](../../../proxy/internal/middleware/builtin/llm_router/middleware.go))
+Vertex/Bedrock provider — `matchModelless` skips those styles
+([llm_router/middleware.go](../../../proxy/internal/middleware/builtin/llm_router/middleware.go))
 so a model-listing call can't be rewritten onto an upstream that would 404 it.
+Gemini is the exception: `generativelanguage.googleapis.com` serves its listing
+under both API versions, and its own `/v1beta/models` path routes to Gemini
+routes specifically.
 
 ## Catalog ↔ pricing cross-check
 

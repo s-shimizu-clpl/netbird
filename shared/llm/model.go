@@ -151,3 +151,16 @@ func NormalizeVertexModel(modelID string) string {
 	}
 	return modelID
 }
+
+// geminiResourcePrefix is the collection segment Google's model resource names
+// carry ("models/gemini-3.8-flash"). The listing endpoint returns the resource
+// name, while the inference path and the pricing key use the bare id.
+const geminiResourcePrefix = "models/"
+
+// NormalizeGeminiModel strips the "models/" resource prefix from a Gemini model
+// id (e.g. "models/gemini-3.8-flash" -> "gemini-3.8-flash") so an operator who
+// registered the resource name Google's listing reports matches the bare id the
+// inference path carries. Ids without the prefix are returned untouched.
+func NormalizeGeminiModel(modelID string) string {
+	return strings.TrimPrefix(modelID, geminiResourcePrefix)
+}

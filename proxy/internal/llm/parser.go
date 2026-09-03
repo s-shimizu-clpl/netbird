@@ -16,6 +16,8 @@ const (
 	ProviderAnthropic Provider = 2
 	// ProviderBedrock identifies the AWS Bedrock runtime surface.
 	ProviderBedrock Provider = 3
+	// ProviderGemini identifies the Google Gemini API surface.
+	ProviderGemini Provider = 4
 )
 
 // RequestFacts captures the subset of the LLM request body that the
@@ -80,6 +82,7 @@ func Parsers() []Parser {
 		OpenAIParser{},
 		AnthropicParser{},
 		BedrockParser{},
+		GeminiParser{},
 	}
 }
 
