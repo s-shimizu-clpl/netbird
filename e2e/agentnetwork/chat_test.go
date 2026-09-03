@@ -40,6 +40,10 @@ var publishedPer1k = map[string]per1k{
 	"anthropic.claude-haiku-4-5":  {0.001, 0.005, 0.0001, 0.00125},
 	"anthropic.claude-sonnet-4-5": {0.003, 0.015, 0.0003, 0.00375},
 	"anthropic.claude-sonnet-4-6": {0.003, 0.015, 0.0003, 0.00375},
+	// Gemini prices the cached prefix as a discount on input, like OpenAI, and
+	// has no cache-write rate at all — its cache charge is per-hour storage,
+	// which is not a per-token rate.
+	"gemini-2.5-flash": {0.0003, 0.0025, 0.00003, 0},
 	// Gateway-prefixed ids (Vercel AI Gateway, OpenRouter). A gateway model is not in
 	// NetBird's default table, so before operator pricing it could only be recorded at
 	// cost 0. The operator names it and prices it — at the underlying vendor's published
@@ -50,8 +54,8 @@ var publishedPer1k = map[string]per1k{
 
 // rawCostVerificationSQL is the operator-facing double-check, run straight against the management
 // sqlite store: recompute each usage row's expected total and cache cost from its own persisted
-// token buckets and hardcoded published rates. OpenAI counts cached tokens as a subset of input;
-// Anthropic-shape providers count cache buckets additively.
+// token buckets and hardcoded published rates. OpenAI and Gemini count cached tokens as a subset
+// of input; Anthropic-shape providers count cache buckets additively.
 //
 // The rate rows must stay in sync with publishedPer1k — they are the same vendor rates the matrix
 // registers as operator prices. The join is on model, so rows written by other tests in this
@@ -69,7 +73,8 @@ WITH rates(model, in_rate, out_rate, read_rate, write_rate) AS (
     ('anthropic.claude-sonnet-4-5', 0.003,   0.015,  0.0003,   0.00375),
     ('anthropic.claude-sonnet-4-6', 0.003,   0.015,  0.0003,   0.00375),
     ('openai/gpt-4o-mini',          0.00015, 0.0006, 0.000075, 0.0),
-    ('openai/gpt-4o',               0.0025,  0.01,   0.00125,  0.0)
+    ('openai/gpt-4o',               0.0025,  0.01,   0.00125,  0.0),
+    ('gemini-2.5-flash',            0.0003,  0.0025, 0.00003,  0.0)
 )
 SELECT
   u.provider,
@@ -86,23 +91,23 @@ SELECT
   -- four per-bucket columns above, exactly as the API renders them.
   (u.input_cost_usd + u.cached_input_cost_usd + u.cache_creation_cost_usd + u.output_cost_usd) AS cost_usd,
   (u.cached_input_cost_usd + u.cache_creation_cost_usd) AS cache_cost_usd,
-  CASE WHEN u.provider = 'openai' THEN
+  CASE WHEN u.provider IN ('openai', 'gemini') THEN
     (u.input_tokens - MIN(u.cached_input_tokens, u.input_tokens))*r.in_rate/1000.0
   ELSE
     u.input_tokens*r.in_rate/1000.0
   END AS expected_input,
-  CASE WHEN u.provider = 'openai' THEN
+  CASE WHEN u.provider IN ('openai', 'gemini') THEN
     MIN(u.cached_input_tokens, u.input_tokens)*r.read_rate/1000.0
   ELSE
     u.cached_input_tokens*r.read_rate/1000.0
   END AS expected_cached_input,
-  CASE WHEN u.provider = 'openai' THEN
+  CASE WHEN u.provider IN ('openai', 'gemini') THEN
     0.0
   ELSE
     u.cache_creation_tokens*r.write_rate/1000.0
   END AS expected_cache_creation,
   u.output_tokens*r.out_rate/1000.0 AS expected_output,
-  CASE WHEN u.provider = 'openai' THEN
+  CASE WHEN u.provider IN ('openai', 'gemini') THEN
     (u.input_tokens - MIN(u.cached_input_tokens, u.input_tokens))*r.in_rate/1000.0
       + MIN(u.cached_input_tokens, u.input_tokens)*r.read_rate/1000.0
       + u.output_tokens*r.out_rate/1000.0
@@ -110,7 +115,7 @@ SELECT
     u.input_tokens*r.in_rate/1000.0 + u.cached_input_tokens*r.read_rate/1000.0
       + u.cache_creation_tokens*r.write_rate/1000.0 + u.output_tokens*r.out_rate/1000.0
   END AS expected_total,
-  CASE WHEN u.provider = 'openai' THEN
+  CASE WHEN u.provider IN ('openai', 'gemini') THEN
     MIN(u.cached_input_tokens, u.input_tokens)*r.read_rate/1000.0
   ELSE
     u.cached_input_tokens*r.read_rate/1000.0 + u.cache_creation_tokens*r.write_rate/1000.0
@@ -209,11 +214,11 @@ func validateAccessLogCost(t *testing.T, pc providerCase, row api.AgentNetworkAc
 	require.Positive(t, row.TotalTokens, "priced row must carry total tokens")
 
 	var wantInput, wantCachedInput, wantCacheCreation float64
-	if provider == "openai" {
+	if provider == "openai" || provider == "gemini" {
 		cached := min(row.CachedInputTokens, row.InputTokens) // cached is a subset of input
 		wantInput = float64(row.InputTokens-cached) / 1000 * rates.in
 		wantCachedInput = float64(cached) / 1000 * rates.read
-		// OpenAI has no cache-write bucket; wantCacheCreation stays 0.
+		// Neither surface has a cache-write bucket; wantCacheCreation stays 0.
 	} else {
 		// Anthropic / Bedrock shape: cache buckets are additive to input_tokens.
 		wantInput = float64(row.InputTokens) / 1000 * rates.in
@@ -301,6 +306,23 @@ func availableProviders() []providerCase {
 		// Raw model (distinct string from OpenAI's gpt-4o-mini).
 		ps = append(ps, providerCase{name: "cloudflare", catalogID: "cloudflare_ai_gateway", upstream: u, apiKey: k, model: "gpt-4o", kind: harness.WireChat})
 	}
+	// Gemini (gemini_api): path-routed like Vertex and Bedrock, but with a
+	// static key in Google's own header. Default model is 2.5 Flash — the
+	// cheapest generally-available generateContent model whose published rates
+	// are not on a promotional clock (3.8/3.7 Flash reprice on 2027-01-01, and
+	// this matrix asserts against hardcoded published rates).
+	if k := os.Getenv("GEMINI_TOKEN"); k != "" {
+		model := os.Getenv("GEMINI_MODEL")
+		if model == "" {
+			model = "gemini-2.5-flash"
+		}
+		ps = append(ps, providerCase{
+			name: "gemini", catalogID: "gemini_api",
+			upstream: "https://generativelanguage.googleapis.com",
+			apiKey:   k, model: model, kind: harness.WireGemini,
+		})
+	}
+
 	// Vertex (vertex_ai_api): Anthropic-on-Vertex, path-routed, SA-OAuth
 	// (api_key = keyfile::<SA>). The model travels in the rawPredict path rather
 	// than the body, so the provider is created without a models array. Region
@@ -355,9 +377,12 @@ func availableProviders() []providerCase {
 }
 
 // providerRequest builds a create request for a matrix provider: enabled, with
-// its model registered at the vendor's published rates for body-routed
-// providers, and no models for the path-routed Vertex (whose model lives in the
-// request path, so it prices from the defaults table management ships).
+// its model registered at the vendor's published rates, and no models for the
+// path-routed Vertex (whose model lives in the request path, so it prices from
+// the defaults table management ships). Bedrock and Gemini are path-routed too
+// but do register their model, under the normalized id the router matches — a
+// path-routed record with an enumerated model is what turns the URL model into
+// an allowlist rather than an open credential.
 //
 // The registered rates matter: management synthesizes them into the cost
 // meter's per-provider-record table, which is consulted before the surface
@@ -519,6 +544,8 @@ func TestProvidersMatrix(t *testing.T) {
 					c, b, cerr = cl.Vertex(ctx, settings.Endpoint, proxyIP, pc.project, pc.region, pc.model, matrixPrompt, sessionID)
 				case harness.WireBedrock:
 					c, b, cerr = cl.Bedrock(ctx, settings.Endpoint, proxyIP, pc.model, matrixPrompt, sessionID)
+				case harness.WireGemini:
+					c, b, cerr = cl.Gemini(ctx, settings.Endpoint, proxyIP, pc.model, matrixPrompt, sessionID)
 				default:
 					c, b, cerr = cl.ChatPrefixed(ctx, settings.Endpoint, proxyIP, pc.pathPrefix, pc.kind, pc.model, matrixPrompt, sessionID)
 				}

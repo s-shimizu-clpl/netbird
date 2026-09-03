@@ -169,8 +169,10 @@ func (c *Client) Fetch(ctx context.Context, req Request) ([]Model, error) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		// Surface the vendor's own status. An operator whose key lacks a scope
-		// needs to see 403 rather than a generic failure.
-		return nil, &VendorStatusError{Provider: entry.Name, Status: resp.StatusCode}
+		// needs to see 403 rather than a generic failure. The body's own reason
+		// rides along for the vendors whose status does not carry the
+		// distinction — Google answers an invalid key with 400.
+		return nil, &VendorStatusError{Provider: entry.Name, Status: resp.StatusCode, Reason: vendorErrorReason(body)}
 	}
 
 	ids, err := parseListing(entry.Discovery.Shape, body)

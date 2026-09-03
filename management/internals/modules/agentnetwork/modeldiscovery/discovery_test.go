@@ -707,3 +707,38 @@ func TestFetch_AListingHostOfItsOwnDoesNotReachThroughTheUpstream(t *testing.T) 
 	assert.Equal(t, "bedrock.eu-central-1.amazonaws.com", tr.got.URL.Host,
 		"checking the runtime host must not turn it into the listing host")
 }
+
+// TestVendorErrorReasonCarriesGoogleAPIKeyFailures: Google refuses an invalid
+// key with 400 INVALID_ARGUMENT rather than 401, so the status alone tells the
+// credential check the URL is at fault when the key is. The body's ErrorInfo
+// reason is what separates the two.
+func TestVendorErrorReasonCarriesGoogleAPIKeyFailures(t *testing.T) {
+	const googleBadKey = `{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.",
+	  "status":"INVALID_ARGUMENT","details":[
+	    {"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"API_KEY_INVALID","domain":"googleapis.com"}
+	  ]}}`
+
+	cl, _ := newStubClient(http.StatusBadRequest, googleBadKey)
+	_, err := cl.Fetch(context.Background(), Request{
+		CatalogID:   "gemini_api",
+		UpstreamURL: "https://generativelanguage.googleapis.com",
+		APIKey:      "AIza-wrong",
+	})
+	require.Error(t, err)
+
+	var vendor *VendorStatusError
+	require.ErrorAs(t, err, &vendor)
+	assert.Equal(t, http.StatusBadRequest, vendor.Status)
+	assert.True(t, vendor.CredentialRejected(),
+		"a 400 whose body names the API key must be reported as a refused credential")
+
+	// A vendor error with no machine-readable reason must not be guessed at.
+	cl, _ = newStubClient(http.StatusBadRequest, `{"error":{"message":"malformed request"}}`)
+	_, err = cl.Fetch(context.Background(), Request{
+		CatalogID:   "gemini_api",
+		UpstreamURL: "https://generativelanguage.googleapis.com",
+		APIKey:      "AIza-test",
+	})
+	require.ErrorAs(t, err, &vendor)
+	assert.False(t, vendor.CredentialRejected(), "an unexplained 400 says nothing about the credential")
+}

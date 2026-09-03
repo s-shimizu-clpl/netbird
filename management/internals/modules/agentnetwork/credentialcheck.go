@@ -104,6 +104,13 @@ func credentialCheckFailure(err error) (message string, blocking bool) {
 
 	var vendor *modeldiscovery.VendorStatusError
 	if errors.As(err, &vendor) {
+		// The vendor's own error names the key, whatever status it chose to
+		// carry it under. Checked before the status switch: Google refuses an
+		// invalid key with 400, which the switch would report as a URL fault
+		// and send the operator to fix the one field that is correct.
+		if vendor.CredentialRejected() {
+			return "the provider rejected the credential", true
+		}
 		switch vendor.Status {
 		case http.StatusUnauthorized, http.StatusForbidden:
 			return "the provider rejected the credential", true

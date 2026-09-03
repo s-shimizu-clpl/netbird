@@ -21,7 +21,7 @@ import (
 )
 
 // TestLiveModelDiscovery drives model discovery against the REAL vendor
-// endpoints — OpenAI, Anthropic, Bedrock and Vertex — rather than the mock.
+// endpoints — OpenAI, Anthropic, Bedrock, Gemini and Vertex — rather than the mock.
 //
 // The mock upstream proves the filter's mechanics: it advertises ids we chose,
 // so a listing narrowing to the ones we authorised is arithmetic we already
@@ -121,7 +121,9 @@ type liveDiscoveryCase struct {
 
 	// permitted is every id allowed to survive filtering, in the form the
 	// provider record registers it. A surviving id counts as permitted when it
-	// matches one of these outright or after Anthropic date-normalisation.
+	// matches one of these outright or after one of the normalisations the
+	// proxy's own filter applies (Anthropic dates, Bedrock profiles, Gemini
+	// resource names).
 	permitted []string
 	// wantHidden are ids the upstream is known to advertise and the bound must
 	// remove. Only set where we enumerate the model ourselves, so the
@@ -197,6 +199,27 @@ func liveDiscoveryCases() []liveDiscoveryCase {
 			models:    []string{model},
 			outcome:   outcomeFiltered,
 			permitted: []string{model},
+		})
+	}
+
+	// Gemini serves its listing at /v1beta/models, not /v1/models, and returns
+	// resource NAMES ("models/gemini-2.5-flash") where the record registers the
+	// bare id. Both halves are the point: the router has to recognise a listing
+	// path no other vendor uses, and the filter has to match two forms of the
+	// same id or it bounds a correct record down to an empty picker.
+	//
+	// Two models registered, one permitted, so both bounds are observable at
+	// once — the account's catalogue is far larger than either.
+	if k := os.Getenv("GEMINI_TOKEN"); k != "" {
+		cases = append(cases, liveDiscoveryCase{
+			name: "gemini", catalogID: "gemini_api",
+			upstream: "https://generativelanguage.googleapis.com", apiKey: k,
+			path:       "/v1beta/models",
+			models:     []string{"gemini-2.5-flash", "gemini-2.5-pro"},
+			allowlist:  []string{"gemini-2.5-flash"},
+			outcome:    outcomeFiltered,
+			permitted:  []string{"gemini-2.5-flash"},
+			wantHidden: []string{"models/gemini-2.5-pro"},
 		})
 	}
 
@@ -336,7 +359,7 @@ func runLiveDiscoveryCase(t *testing.T, ctx context.Context, tc liveDiscoveryCas
 
 	ids, ok := listingIDs(body)
 	require.Truef(t, ok,
-		"%s answered discovery with something other than a {\"data\":[{\"id\":…}]} listing, which the filter forwards untouched — the caller would get an unbounded picker; response was %s",
+		"%s answered discovery with none of the listing envelopes the filter recognises, and an unrecognised body is forwarded untouched — the caller would get an unbounded picker; response was %s",
 		tc.name, bodyShape(body))
 	sort.Strings(ids)
 	t.Logf("[discovery] %s: %d ids after filtering: %s", tc.name, len(ids), strings.Join(ids, ", "))
@@ -354,7 +377,9 @@ func runLiveDiscoveryCase(t *testing.T, ctx context.Context, tc liveDiscoveryCas
 		// Bedrock ids carry a region prefix and version suffix the record may
 		// not repeat; the proxy's filter tries the same forms.
 		_, bedrock := permitted[sharedllm.NormalizeBedrockModel(id)]
-		assert.Truef(t, direct || dated || bedrock,
+		// Gemini ids arrive as resource names ("models/gemini-2.5-flash").
+		_, gemini := permitted[sharedllm.NormalizeGeminiModel(id)]
+		assert.Truef(t, direct || dated || bedrock || gemini,
 			"%s offered %q, which no policy on this route permits — every entry the picker shows must be a request the guardrail would allow", tc.name, id)
 	}
 	for _, hidden := range tc.wantHidden {
@@ -387,6 +412,10 @@ func listingIDs(body string) ([]string, bool) {
 		Summaries []struct {
 			ID string `json:"inferenceProfileId"`
 		} `json:"inferenceProfileSummaries"`
+		// Gemini returns resource names under "models".
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
 	}
 	if err := json.Unmarshal([]byte(body), &doc); err != nil {
 		return nil, false
@@ -402,6 +431,15 @@ func listingIDs(body string) ([]string, bool) {
 		ids := make([]string, 0, len(doc.Summaries))
 		for _, entry := range doc.Summaries {
 			ids = append(ids, entry.ID)
+		}
+		return ids, true
+	case doc.Models != nil:
+		// Reported verbatim, prefix included: the assertions normalise, and a
+		// listing quietly rewritten by the filter is exactly what this must be
+		// able to see.
+		ids := make([]string, 0, len(doc.Models))
+		for _, entry := range doc.Models {
+			ids = append(ids, entry.Name)
 		}
 		return ids, true
 	}

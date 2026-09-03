@@ -92,6 +92,26 @@ func TestCredentialCheckFailure_SeparatesTheUrlFromTheCredential(t *testing.T) {
 			err:  &modeldiscovery.VendorStatusError{Provider: "Anthropic", Status: 429},
 			want: "the provider returned an error",
 		},
+		{
+			// Google refuses an invalid API key with 400 INVALID_ARGUMENT, so
+			// the status alone would send the operator to fix their URL.
+			name: "google names the key under a 400",
+			err:  &modeldiscovery.VendorStatusError{Provider: "Google Gemini API", Status: 400, Reason: "API_KEY_INVALID"},
+			want: "the provider rejected the credential",
+		},
+		{
+			name: "google names a restricted key",
+			err:  &modeldiscovery.VendorStatusError{Provider: "Google Gemini API", Status: 403, Reason: "API_KEY_SERVICE_BLOCKED"},
+			want: "the provider rejected the credential",
+		},
+		{
+			// A 400 the vendor did not blame the key for stays the generic
+			// vendor error: guessing "bad credential" would be worse than
+			// saying only what is known.
+			name: "an unexplained 400 is the vendor",
+			err:  &modeldiscovery.VendorStatusError{Provider: "Google Gemini API", Status: 400},
+			want: "the provider returned an error",
+		},
 	}
 
 	for _, tc := range cases {

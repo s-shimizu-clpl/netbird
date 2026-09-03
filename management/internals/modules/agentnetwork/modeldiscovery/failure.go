@@ -3,10 +3,12 @@ package modeldiscovery
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"syscall"
 )
 
@@ -18,13 +20,57 @@ import (
 // VendorStatusError reports a listing answered with something other than 200.
 // Only the vendor's own code separates a refused credential (401, 403) from a
 // URL that does not serve this API (404, 405) from an unwell vendor (5xx).
+//
+// Reason carries a machine-readable cause from the body where the status alone
+// is not enough. Google is why it exists: its APIs answer an invalid key with
+// 400 INVALID_ARGUMENT rather than 401, so a status-only classification tells
+// an operator their URL is at fault when their key is.
 type VendorStatusError struct {
 	Provider string
 	Status   int
+	Reason   string
 }
 
 func (e *VendorStatusError) Error() string {
 	return fmt.Sprintf("%s returned %d for its model listing", e.Provider, e.Status)
+}
+
+// CredentialRejected reports whether the vendor's own error names the
+// credential as the cause. False for a status the caller already reads as a
+// refusal (401, 403) — that judgement stays with the caller, which owns the
+// status-to-message mapping.
+func (e *VendorStatusError) CredentialRejected() bool {
+	return strings.HasPrefix(e.Reason, googleAPIKeyReasonPrefix)
+}
+
+// googleAPIKeyReasonPrefix marks every google.rpc.ErrorInfo reason that names
+// the API key: API_KEY_INVALID for a malformed or unknown key,
+// API_KEY_SERVICE_BLOCKED and the referrer/IP variants for a key the project
+// restricted. All of them are the operator's credential, not their URL.
+const googleAPIKeyReasonPrefix = "API_KEY_"
+
+// vendorErrorReason lifts a machine-readable cause out of a vendor's error
+// body. Only the Google shape is read today
+// ({"error":{"details":[{"reason":…}]}}); every other vendor this catalog
+// speaks to distinguishes a refused credential by status alone, and a body we
+// cannot read yields "" so the caller falls back to the status.
+func vendorErrorReason(body []byte) string {
+	var doc struct {
+		Error struct {
+			Details []struct {
+				Reason string `json:"reason"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return ""
+	}
+	for _, detail := range doc.Error.Details {
+		if detail.Reason != "" {
+			return detail.Reason
+		}
+	}
+	return ""
 }
 
 // UnreachableError reports that the request never reached the vendor: the

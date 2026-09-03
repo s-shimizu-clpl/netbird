@@ -292,6 +292,10 @@ const (
 	// routes by path. This is what a Bedrock SDK client sends and the shape the
 	// model-allowlist guardrail must enforce.
 	WireBedrock = "bedrock"
+	// WireGemini is the Google Gemini generateContent shape: the model travels
+	// in the URL path (/v1beta/models/{model}:generateContent), not the body,
+	// and the credential rides in x-goog-api-key rather than Authorization.
+	WireGemini = "gemini"
 )
 
 // Chat issues a chat-completion POST to the agent-network endpoint over the
@@ -364,6 +368,19 @@ func (cl *Client) Vertex(ctx context.Context, endpoint, proxyIP, project, region
 func (cl *Client) Bedrock(ctx context.Context, endpoint, proxyIP, model, prompt, sessionID string) (int, string, error) {
 	path := "/model/" + model + "/invoke"
 	body := fmt.Sprintf(`{"anthropic_version":"bedrock-2023-05-31","max_tokens":2048,"messages":[{"role":"user","content":%q}]}`, prompt)
+	return cl.post(ctx, endpoint, proxyIP, path, body, withSessionID(nil, sessionID))
+}
+
+// Gemini issues a Google Gemini generateContent POST over the tunnel. The
+// model is carried in the request path, so the proxy routes by path; the body
+// carries only contents[]. A non-empty sessionID is sent as the universal
+// x-session-id header the proxy records.
+//
+// No credential header is sent: the router injects the provider record's key as
+// x-goog-api-key, and a client-supplied one would be stripped anyway.
+func (cl *Client) Gemini(ctx context.Context, endpoint, proxyIP, model, prompt, sessionID string) (int, string, error) {
+	path := "/v1beta/models/" + model + ":generateContent"
+	body := fmt.Sprintf(`{"contents":[{"role":"user","parts":[{"text":%q}]}],"generationConfig":{"maxOutputTokens":2048}}`, prompt)
 	return cl.post(ctx, endpoint, proxyIP, path, body, withSessionID(nil, sessionID))
 }
 

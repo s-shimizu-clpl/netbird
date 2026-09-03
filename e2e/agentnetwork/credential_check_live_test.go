@@ -45,6 +45,12 @@ func liveCredentialCases() []credentialCase {
 			upstream: "https://api.anthropic.com", apiKey: k,
 		})
 	}
+	if k := os.Getenv("GEMINI_TOKEN"); k != "" {
+		cases = append(cases, credentialCase{
+			name: "gemini", catalogID: "gemini_api",
+			upstream: "https://generativelanguage.googleapis.com", apiKey: k,
+		})
+	}
 	if k := os.Getenv("AWS_BEARER_TOKEN_BEDROCK"); k != "" {
 		region := os.Getenv("AWS_REGION")
 		if region == "" {

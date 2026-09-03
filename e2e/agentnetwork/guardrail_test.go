@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/netbirdio/netbird/e2e/harness"
+	sharedllm "github.com/netbirdio/netbird/shared/llm"
 	"github.com/netbirdio/netbird/shared/management/http/api"
 )
 
@@ -41,6 +42,8 @@ func catalogModel(pc providerCase) string {
 		return bedrockVersionSuffix.ReplaceAllString(m, "")
 	case harness.WireVertex:
 		return strings.SplitN(pc.model, "@", 2)[0]
+	case harness.WireGemini:
+		return sharedllm.NormalizeGeminiModel(pc.model)
 	default:
 		return pc.model
 	}
@@ -57,6 +60,10 @@ func disallowedModel(pc providerCase) string {
 		return strings.SplitN(pc.model, ".", 2)[0] + ".anthropic.claude-opus-4-8"
 	case harness.WireVertex:
 		return "claude-opus-4-8@20250101"
+	case harness.WireGemini:
+		// A real Gemini model id the record does not enumerate, so a denial
+		// here is the allowlist rather than the vendor rejecting a typo.
+		return "gemini-2.5-pro"
 	default:
 		return "unlisted-model"
 	}
@@ -73,6 +80,8 @@ func sendModel(ctx context.Context, t *testing.T, cl *harness.Client, endpoint, 
 		code, _, err = cl.Bedrock(ctx, endpoint, proxyIP, model, "Reply with exactly: pong", "")
 	case harness.WireVertex:
 		code, _, err = cl.Vertex(ctx, endpoint, proxyIP, pc.project, pc.region, model, "Reply with exactly: pong", "")
+	case harness.WireGemini:
+		code, _, err = cl.Gemini(ctx, endpoint, proxyIP, model, "Reply with exactly: pong", "")
 	default:
 		code, _, err = cl.ChatPrefixed(ctx, endpoint, proxyIP, pc.pathPrefix, pc.kind, model, "Reply with exactly: pong", "")
 	}
@@ -81,20 +90,21 @@ func sendModel(ctx context.Context, t *testing.T, cl *harness.Client, endpoint, 
 }
 
 // TestModelAllowlistEnforced provisions a Model Allowlist guardrail limiting each
-// path-routed provider (Bedrock, Vertex) to its configured model, then drives
-// requests over the tunnel: the allowed model returns 200 while a model outside
-// the allowlist is denied 403 by the guardrail before it reaches the upstream.
-// This is the coverage missing for #6751 — the model for these providers travels
-// in the URL path, and the allowlist must be enforced there.
+// path-routed provider (Bedrock, Vertex, Gemini) to its configured model, then
+// drives requests over the tunnel: the allowed model returns 200 while a model
+// outside the allowlist is denied 403 by the guardrail before it reaches the
+// upstream. This is the coverage missing for #6751 — the model for these
+// providers travels in the URL path, and the allowlist must be enforced there.
 func TestModelAllowlistEnforced(t *testing.T) {
 	var providers []providerCase
 	for _, pc := range availableProviders() {
-		if pc.kind == harness.WireBedrock || pc.kind == harness.WireVertex {
+		switch pc.kind {
+		case harness.WireBedrock, harness.WireVertex, harness.WireGemini:
 			providers = append(providers, pc)
 		}
 	}
 	if len(providers) == 0 {
-		t.Skip("no path-routed provider keys set (AWS_BEARER_TOKEN_BEDROCK / GOOGLE_VERTEX_*); source ~/.llm-keys")
+		t.Skip("no path-routed provider keys set (AWS_BEARER_TOKEN_BEDROCK / GOOGLE_VERTEX_* / GEMINI_TOKEN); source ~/.llm-keys")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
