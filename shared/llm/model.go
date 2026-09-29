@@ -151,3 +151,17 @@ func NormalizeVertexModel(modelID string) string {
 	}
 	return modelID
 }
+
+// NormalizeGeminiModel strips the "@version" suffix from a Gemini model id
+// (e.g. "gemini-2.5-pro@latest" -> "gemini-2.5-pro") so it matches the
+// catalog/pricing key. Preview suffixes ("gemini-3-flash-preview") are part
+// of the priced id and survive. The rule matches NormalizeVertexModel today,
+// but the two stay separate functions: the Gemini API may introduce a
+// versioning form Vertex never had, and a shared helper would then force a
+// change onto the Vertex path too.
+func NormalizeGeminiModel(modelID string) string {
+	if at := strings.Index(modelID, "@"); at >= 0 {
+		return modelID[:at]
+	}
+	return modelID
+}

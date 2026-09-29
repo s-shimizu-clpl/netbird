@@ -182,10 +182,12 @@ func newCosts(input, cachedInput, cacheCreation, output float64) Costs {
 //
 // Provider-shape semantics for cached / cache-creation counts:
 //
-//   - "openai": cachedInput is a SUBSET of inTokens. The cached portion is
-//     billed at CachedInputPer1K (or InputPer1K when no override), and the
-//     non-cached remainder of inTokens at InputPer1K. cacheCreation is
-//     ignored (OpenAI has no analogue).
+//   - "openai", "gemini": cachedInput is a SUBSET of inTokens. The cached
+//     portion is billed at CachedInputPer1K (or InputPer1K when no
+//     override), and the non-cached remainder of inTokens at InputPer1K.
+//     cacheCreation is ignored (neither surface has an additive write
+//     bucket — Gemini's cachedContentTokenCount behaves like OpenAI's
+//     cached_tokens).
 //   - "anthropic", "bedrock": cachedInput (cache_read) and cacheCreation are
 //     ADDITIVE to inTokens. The three buckets are billed at CacheReadPer1K,
 //     CacheCreationPer1K, and InputPer1K respectively, each falling back
@@ -209,7 +211,7 @@ func EntryCosts(entry Entry, surface string, inTokens, outTokens, cachedInput, c
 	}
 	output := (float64(outTokens) / 1000.0) * entry.OutputPer1K
 	switch surface {
-	case "openai":
+	case "openai", "gemini":
 		// cachedInput is a subset of inTokens; clamp so a malformed
 		// upstream (cached > total) can't produce a negative remainder.
 		clamped := cachedInput

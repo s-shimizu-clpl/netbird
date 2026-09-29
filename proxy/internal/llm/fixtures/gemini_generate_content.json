@@ -1,0 +1,30 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "The capital of France is Paris."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "promptFeedback": {
+    "safetyRatings": [
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "probability": "NEGLIGIBLE"
+      }
+    ]
+  },
+  "usageMetadata": {
+    "promptTokenCount": 6,
+    "candidatesTokenCount": 9,
+    "totalTokenCount": 15,
+    "cachedContentTokenCount": 4
+  }
+}

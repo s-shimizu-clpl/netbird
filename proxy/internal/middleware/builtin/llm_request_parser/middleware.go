@@ -94,6 +94,11 @@ func (m middlewareImpl) Invoke(_ context.Context, in *middleware.Input) (*middle
 		return m.invokeBedrock(in, br), nil
 	}
 
+	// Gemini carries the model in the URL path too (/v1beta/models/{model}:{action}).
+	if gm, okg := parseGeminiPath(extractPath(in.URL)); okg {
+		return m.invokeGemini(in, gm), nil
+	}
+
 	// A path that names an API surface wins over the configured providerID:
 	// a gateway record pinned to "openai" still serves Claude Code on
 	// /v1/messages, and reading that body with the OpenAI parser loses the
@@ -306,14 +311,18 @@ func parseVertexPath(reqPath string) (vertexRequest, bool) {
 }
 
 // vertexPublisherVendor maps a Vertex publisher to the parser surface its
-// requests/responses speak. Empty for publishers without a parser yet
-// (e.g. google/gemini) — the request still routes, but isn't metered.
+// requests/responses speak. Empty for publishers without a parser yet —
+// the request still routes, but isn't metered. The google publisher speaks
+// the Gemini surface, priced on the same catalog rates as the first-party
+// Gemini API.
 func vertexPublisherVendor(publisher string) string {
 	switch strings.ToLower(publisher) {
 	case "anthropic":
 		return "anthropic"
 	case "openai":
 		return "openai"
+	case "google":
+		return llm.ProviderNameGemini
 	default:
 		return ""
 	}
@@ -439,6 +448,100 @@ func (m middlewareImpl) invokeBedrock(in *middleware.Input, br bedrockRequest) *
 	}
 
 	parser, _ := llm.ParserByName(llm.ProviderNameBedrock)
+	sessionID := sessionIDFromHeaders(in.Headers)
+	if sessionID == "" && parser != nil {
+		sessionID = parser.ExtractSessionID(in.Body)
+	}
+	if sessionID != "" {
+		md = append(md, middleware.KV{Key: middleware.KeyLLMSessionID, Value: sessionID})
+	}
+	md = appendAgentIDs(md, in.Headers)
+
+	promptTruncated := false
+	if parser != nil && m.capturePrompt {
+		var prompt string
+		prompt, promptTruncated = truncatePrompt(parser.ExtractPrompt(in.Body))
+		if prompt != "" {
+			if m.redactPii {
+				prompt = llm_guardrail.RedactPII(prompt)
+				var rt bool
+				prompt, rt = truncatePrompt(prompt)
+				promptTruncated = promptTruncated || rt
+			}
+			md = append(md, middleware.KV{Key: middleware.KeyLLMRequestPromptRaw, Value: prompt})
+		}
+	}
+	md = appendCaptureTruncated(md, promptTruncated, in.BodyTruncated)
+	out.Metadata = md
+	return out
+}
+
+// geminiRequest is the model + streaming flag extracted from a Gemini model
+// path. The interactions endpoint carries the model in the body instead and
+// never reaches this struct — see parseGeminiPath.
+type geminiRequest struct {
+	model  string
+	stream bool
+}
+
+// geminiModelPrefix is the segment a Gemini model endpoint names its model
+// under. The "/v1beta" and "/v1" version prefixes are optional because the
+// API is reachable both at the bare host root and behind its own version
+// segment.
+const geminiModelPrefix = "/models/"
+
+// parseGeminiPath extracts the model and streaming flag from a Gemini API
+// model endpoint:
+//
+//	/v1beta/models/{model}:{action}   (also /v1, or no version prefix)
+//	action ∈ {generateContent, streamGenerateContent, batchGenerateContent,
+//	          streamBatchGenerateContent}
+//
+// The model's "@version" suffix is stripped so it matches catalog/pricing.
+// The interactions endpoint (/v1beta/interactions) carries the model in the
+// request body instead; it is detected by GeminiParser.ParseRequest through
+// the generic DetectParser path, so it is deliberately not claimed here.
+func parseGeminiPath(reqPath string) (geminiRequest, bool) {
+	idx := strings.Index(reqPath, geminiModelPrefix)
+	if idx < 0 {
+		return geminiRequest{}, false
+	}
+	rest := reqPath[idx+len(geminiModelPrefix):] // {model}:{action}
+	colon := strings.LastIndex(rest, ":")
+	if colon <= 0 {
+		return geminiRequest{}, false
+	}
+	rawModel, action := rest[:colon], rest[colon+1:]
+	if decoded, err := url.PathUnescape(rawModel); err == nil {
+		rawModel = decoded
+	}
+	model := llm.NormalizeGeminiModel(rawModel)
+	if model == "" {
+		return geminiRequest{}, false
+	}
+	switch strings.ToLower(action) {
+	case "generatecontent", "batchgeneratecontent":
+		return geminiRequest{model: model}, true
+	case "streamgeneratecontent", "streambatchgeneratecontent":
+		return geminiRequest{model: model, stream: true}, true
+	default:
+		return geminiRequest{}, false
+	}
+}
+
+// invokeGemini emits the model/provider/session/prompt for a Gemini API
+// request. Gemini is metered under the dedicated "gemini" parser, which
+// reads the generateContent, batchGenerateContent, and interactions
+// response shapes.
+func (m middlewareImpl) invokeGemini(in *middleware.Input, gm geminiRequest) *middleware.Output {
+	out := &middleware.Output{Decision: middleware.DecisionAllow}
+	md := []middleware.KV{
+		{Key: middleware.KeyLLMProvider, Value: llm.ProviderNameGemini},
+		{Key: middleware.KeyLLMModel, Value: gm.model},
+		{Key: middleware.KeyLLMStream, Value: strconv.FormatBool(gm.stream)},
+	}
+
+	parser, _ := llm.ParserByName(llm.ProviderNameGemini)
 	sessionID := sessionIDFromHeaders(in.Headers)
 	if sessionID == "" && parser != nil {
 		sessionID = parser.ExtractSessionID(in.Body)

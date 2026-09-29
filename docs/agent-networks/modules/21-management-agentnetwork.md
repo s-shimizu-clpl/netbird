@@ -83,7 +83,7 @@ flowchart TD
     D --> G[DefaultTable]
     F --> G
     G --> H[buildCostMeterConfigJSON — pricing.defaults]
-    I[types.Provider.Models operator prices] --> J[normalizePricingModelID<br/>bedrock ARN/region/version, vertex @version]
+    I[types.Provider.Models operator prices] --> J[normalizePricingModelID<br/>bedrock ARN/region/version, vertex/gemini @version]
     J --> K[materializeEntry: default entry as base,<br/>operator input/output verbatim,<br/>cache pointers only when non-nil]
     K --> L[pricing.providers keyed by provider record ID]
     H --> M[cost_meter ConfigJSON]
@@ -94,8 +94,8 @@ flowchart TD
 
 **Two tiers, resolved per request on the proxy** (`synthesizer_pricing.go:22-35`):
 
-- `pricing.defaults` — surface (`openai`/`anthropic`/`bedrock`) → normalized model
-  id → rates. The **full** default table ships to every account: it is small
+- `pricing.defaults` — surface (`openai`/`anthropic`/`bedrock`/`gemini`) →
+  normalized model id → rates. The **full** default table ships to every account: it is small
   (~10 KB) and it is what keeps gateway-style providers (which enumerate no
   models, so they claim every model) priced.
 - `pricing.providers` — provider **record** id → normalized model id → rates,
@@ -112,7 +112,8 @@ flowchart TD
 Same orphan rule as the router: a provider no enabled policy authorises is
 unreachable, so its prices aren't shipped. Model ids are normalized with the
 **same** functions the request parser uses (`NormalizeBedrockModel` /
-`NormalizeVertexModel`), which is what makes the per-record lookup key compare
+`NormalizeVertexModel` / `NormalizeGeminiModel`), which is what makes the
+per-record lookup key compare
 equal to the `llm.model` the proxy meters. Post-normalization duplicates resolve
 first-occurrence-wins, matching the routing dedup order.
 

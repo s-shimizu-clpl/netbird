@@ -374,6 +374,11 @@ type routerProviderRoute struct {
 	// the URL path (/model/{id}/{action}). The router selects it by path,
 	// bypassing the model/vendor table; auth is a static bearer token.
 	Bedrock bool `json:"bedrock,omitempty"`
+	// Gemini marks a Google Gemini API provider, whose model requests carry
+	// the model in the URL path (/v1beta/models/{model}:{action}). The router
+	// selects it by path, bypassing the model/vendor table. The interactions
+	// endpoint names the model in the body and routes via the model table.
+	Gemini bool `json:"gemini,omitempty"`
 	// GCPServiceAccountKeyB64 carries a base64-encoded GCP service-account
 	// JSON key (from a "keyfile::<base64>" api_key). When set, the proxy mints
 	// + refreshes the OAuth token at request time instead of injecting a static
@@ -474,6 +479,7 @@ func buildRouterConfigJSON(providers []*types.Provider, groupIndex map[string][]
 			ModelPolicies:           modelPolicies[p.ID],
 			Vertex:                  catalog.IsVertexPathStyle(p.ProviderID),
 			Bedrock:                 catalog.IsBedrockPathStyle(p.ProviderID),
+			Gemini:                  catalog.IsGeminiProvider(p.ProviderID),
 			GCPServiceAccountKeyB64: gcpSAKeyB64,
 			SkipTLSVerify:           p.SkipTLSVerification,
 			DiscoveryHost:           discoveryHost(catalogEntry, p.UpstreamURL),

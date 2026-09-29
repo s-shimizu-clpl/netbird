@@ -65,6 +65,7 @@ var strippedAuthHeaders = []string{
 	"Proxy-Authorization", // upstream proxy auth (defense-in-depth)
 	"x-api-key",           // Anthropic
 	"api-key",             // Azure OpenAI
+	"x-goog-api-key",      // Gemini API key
 	"X-Amz-Date",          // AWS SigV4 — strip client-supplied AWS signing material
 	"X-Amz-Security-Token",
 	"X-Amz-Content-Sha256",
@@ -175,6 +176,15 @@ func (m *Middleware) Invoke(_ context.Context, in *middleware.Input) (*middlewar
 				stripBedrockNamespace(out)
 			}
 		}), nil
+	}
+
+	// Gemini carries the model in the URL path too (/v1beta/models/{model}:
+	// {action}), so model-table routing never sees it. Route by path before the
+	// model lookup. Vertex is excluded — its /v1/projects/.../publishers/...
+	// form was claimed above, before this branch.
+	if isGeminiPath(reqPath) {
+		route, outcome := m.matchGemini(reqPath, model, in.UserGroups)
+		return m.decide(route, outcome, surface, model, in.UserGroups, nil), nil
 	}
 
 	// GET /v1/models/{id} carries no body, so no model reaches the router in
@@ -333,6 +343,11 @@ func discoverableModels(route ProviderRoute, userGroups []string) ([]string, boo
 		}
 		if route.Vertex {
 			if _, ok := permitted[llm.NormalizeVertexModel(m)]; ok {
+				intersection[m] = struct{}{}
+			}
+		}
+		if route.Gemini {
+			if _, ok := permitted[llm.NormalizeGeminiModel(m)]; ok {
 				intersection[m] = struct{}{}
 			}
 		}
@@ -582,6 +597,56 @@ func isVertexPath(reqPath string) bool {
 		strings.Contains(reqPath, "/models/")
 }
 
+// trimGeminiVersion removes an optional Gemini version prefix ("/v1beta" or
+// "/v1"), returning the remainder and whether a known prefix was present.
+// The bare path is also accepted (ok=true): the API answers at the host root
+// too. Vertex paths never trim to a Gemini shape — "/projects/..." matches
+// neither the models nor the interactions form below.
+func trimGeminiVersion(reqPath string) (string, bool) {
+	for _, prefix := range []string{"/v1beta", "/v1"} {
+		if reqPath == prefix || strings.HasPrefix(reqPath, prefix+"/") {
+			return strings.TrimPrefix(reqPath, prefix), true
+		}
+	}
+	return reqPath, true
+}
+
+// geminiActions are the model-endpoint actions Gemini serves. The bare form
+// and the stream form are distinct actions on the wire; streamBatch mirrors
+// batch.
+var geminiActions = map[string]struct{}{
+	"generatecontent":            {},
+	"streamgeneratecontent":      {},
+	"batchgeneratecontent":       {},
+	"streambatchgeneratecontent": {},
+}
+
+// isGeminiPath reports whether reqPath is a first-party Gemini API model
+// endpoint: /v1beta/models/{model}:{action} (the /v1beta or /v1 version
+// prefix is optional), or the /v1beta/interactions endpoint. Vertex paths
+// are excluded by the version-prefix rule — Vertex lives under
+// /v1/projects/..., never under /v1beta.
+func isGeminiPath(reqPath string) bool {
+	rest, ok := trimGeminiVersion(reqPath)
+	if !ok {
+		return false
+	}
+	if rest == "/interactions" {
+		return true
+	}
+	const modelsPrefix = "/models/"
+	if !strings.HasPrefix(rest, modelsPrefix) {
+		return false
+	}
+	model := strings.TrimPrefix(rest, modelsPrefix)
+	colon := strings.LastIndex(model, ":")
+	if colon <= 0 || colon == len(model)-1 {
+		return false
+	}
+	_, known := geminiActions[strings.ToLower(model[colon+1:])]
+	return known
+}
+
 // bedrockNamespacePrefix is an optional gateway-namespace prefix some clients
 // place before the native Bedrock path to disambiguate it from other providers
 // that also use "/model/...". It is stripped before forwarding upstream.
@@ -635,6 +700,12 @@ func (m *Middleware) matchVertex(reqPath, model string, userGroups []string) (Pr
 // and claiming the requested model.
 func (m *Middleware) matchBedrock(reqPath, model string, userGroups []string) (ProviderRoute, matchOutcome) {
 	return m.matchPathRoute(reqPath, model, userGroups, func(r ProviderRoute) bool { return r.Bedrock })
+}
+
+// matchGemini selects the Gemini provider authorised for the caller's groups
+// and claiming the requested model.
+func (m *Middleware) matchGemini(reqPath, model string, userGroups []string) (ProviderRoute, matchOutcome) {
+	return m.matchPathRoute(reqPath, model, userGroups, func(r ProviderRoute) bool { return r.Gemini })
 }
 
 // matchPathRoute selects a path-routed provider (Vertex/Bedrock). These carry
@@ -727,10 +798,10 @@ func (m *Middleware) matchModelless(reqPath, method string, userGroups []string)
 			eligible = func(r ProviderRoute) bool { return r.Bedrock }
 		}
 	case isModelLessPath(reqPath):
-		// Vertex/Bedrock are path-routed and don't serve OpenAI-style
+		// Vertex/Bedrock/Gemini are path-routed and don't serve OpenAI-style
 		// model-listing endpoints; including them here could rewrite a
 		// GET /v1/models to an upstream that 404s it.
-		eligible = func(r ProviderRoute) bool { return !r.Vertex && !r.Bedrock }
+		eligible = func(r ProviderRoute) bool { return !r.Vertex && !r.Bedrock && !r.Gemini }
 	default:
 		return ProviderRoute{}, matchOutcomeUnknownModel
 	}
@@ -877,6 +948,11 @@ func routeClaimsModel(route ProviderRoute, model string) bool {
 		// Vertex likewise: the parser strips the "@version" suffix from the
 		// path model, while the operator may register the versioned form.
 		if route.Vertex && llm.NormalizeVertexModel(candidate) == model {
+			return true
+		}
+		// Gemini likewise: the parser strips the "@version" suffix from the
+		// path model, while the operator may register the versioned form.
+		if route.Gemini && llm.NormalizeGeminiModel(candidate) == model {
 			return true
 		}
 		// A client may pin a dated Anthropic id ("claude-sonnet-4-5-20250929")

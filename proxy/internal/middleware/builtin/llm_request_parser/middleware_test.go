@@ -467,6 +467,98 @@ func TestParseVertexPath_CountTokensKeepsModel(t *testing.T) {
 	}
 }
 
+// TestParseGeminiPath covers the path-routed Gemini model endpoints. The
+// interactions endpoint is deliberately absent: its model rides in the body
+// and the generic DetectParser path claims it, not parseGeminiPath.
+func TestParseGeminiPath(t *testing.T) {
+	cases := map[string]struct {
+		model  string
+		stream bool
+		ok     bool
+	}{
+		"/v1beta/models/gemini-2.5-pro:generateContent":                {model: "gemini-2.5-pro", ok: true},
+		"/v1beta/models/gemini-2.5-pro@latest:generateContent":         {model: "gemini-2.5-pro", ok: true},
+		"/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent":  {model: "gemini-3.1-pro-preview", stream: true, ok: true},
+		"/v1/models/gemini-2.5-flash:batchGenerateContent":             {model: "gemini-2.5-flash", ok: true},
+		"/models/gemini-2.5-flash-lite:streamBatchGenerateContent":     {model: "gemini-2.5-flash-lite", stream: true, ok: true},
+		"/v1beta/models/gemini-2.5-pro:countTokens":                    {ok: false},
+		"/v1beta/interactions":                                         {ok: false},
+		"/v1/chat/completions":                                         {ok: false},
+		"/v1/projects/p/locations/global/publishers/google/models/x:y": {ok: false},
+	}
+	for path, want := range cases {
+		gm, ok := parseGeminiPath(path)
+		require.Equal(t, want.ok, ok, "parseGeminiPath(%q)", path)
+		if want.ok {
+			assert.Equal(t, want.model, gm.model, "model for %q", path)
+			assert.Equal(t, want.stream, gm.stream, "stream flag for %q", path)
+		}
+	}
+}
+
+func TestInvoke_GeminiGenerateContent(t *testing.T) {
+	mw := newMiddleware(t)
+	body := []byte(`{"contents":[{"parts":[{"text":"Explain GNSS"}]}]}`)
+
+	out, err := mw.Invoke(context.Background(), &middleware.Input{
+		URL:  "/v1beta/models/gemini-2.5-pro:generateContent",
+		Body: body,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, middleware.DecisionAllow, out.Decision)
+
+	provider, ok := metaValue(t, out.Metadata, middleware.KeyLLMProvider)
+	require.True(t, ok, "provider metadata must be set")
+	assert.Equal(t, "gemini", provider, "gemini detected from path")
+
+	model, ok := metaValue(t, out.Metadata, middleware.KeyLLMModel)
+	require.True(t, ok, "model metadata must be set")
+	assert.Equal(t, "gemini-2.5-pro", model, "model extracted from URL path, not body")
+
+	stream, ok := metaValue(t, out.Metadata, middleware.KeyLLMStream)
+	require.True(t, ok)
+	assert.Equal(t, "false", stream, "generateContent is buffered")
+
+	prompt, ok := metaValue(t, out.Metadata, middleware.KeyLLMRequestPromptRaw)
+	require.True(t, ok, "prompt metadata must be set when extractable")
+	assert.Contains(t, prompt, "Explain GNSS", "extracted prompt carries the user text")
+}
+
+func TestInvoke_GeminiStreamGenerateContent(t *testing.T) {
+	mw := newMiddleware(t)
+	out, err := mw.Invoke(context.Background(), &middleware.Input{
+		URL:  "/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent",
+		Body: []byte(`{"contents":[{"parts":[{"text":"hi"}]}]}`),
+	})
+	require.NoError(t, err)
+
+	provider, ok := metaValue(t, out.Metadata, middleware.KeyLLMProvider)
+	require.True(t, ok)
+	assert.Equal(t, "gemini", provider)
+
+	stream, ok := metaValue(t, out.Metadata, middleware.KeyLLMStream)
+	require.True(t, ok)
+	assert.Equal(t, "true", stream, "streamGenerateContent reports stream=true")
+}
+
+// TestInvoke_VertexGooglePublisherMapsToGemini pins the unlock: the google
+// publisher speaks the gemini surface, so its requests meter on the gemini
+// pricing table instead of being denied as unmeterable.
+func TestInvoke_VertexGooglePublisherMapsToGemini(t *testing.T) {
+	vx := vertexRequest{publisher: "google", model: "gemini-2.5-pro"}
+	assert.Equal(t, "gemini", vertexPublisherVendor(vx.publisher), "google publisher maps to the gemini surface")
+
+	mw := newMiddleware(t)
+	out, err := mw.Invoke(context.Background(), &middleware.Input{
+		URL:  "/v1/projects/p/locations/global/publishers/google/models/gemini-2.5-pro:generateContent",
+		Body: []byte(`{"contents":[{"parts":[{"text":"hi"}]}]}`),
+	})
+	require.NoError(t, err)
+	provider, ok := metaValue(t, out.Metadata, middleware.KeyLLMProvider)
+	require.True(t, ok, "vertex google request must carry a provider")
+	assert.Equal(t, "gemini", provider, "vertex google meters on the gemini surface")
+}
+
 // TestInvoke_EmitsAgentIDs covers sub-agent attribution: several agents run
 // in parallel inside one session, and without their ids every request in
 // the session attributes to the session alone.

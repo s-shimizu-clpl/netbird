@@ -2,14 +2,18 @@
 
 The runtime-agnostic LLM library: the OpenAI Responses API (`/v1/responses`)
 and the older Chat Completions API (`/v1/chat/completions`), the Anthropic
-Messages API (`/v1/messages`), the SSE wire format (`event:` / `data:` lines,
-`\n\n` framing, CRLF tolerance), and per-provider token accounting (OpenAI's
-cached-prompt **subset** vs Anthropic's cache_read **additive** model). The
+Messages API (`/v1/messages`), the Google Gemini API
+(`/v1beta/models/{model}:{action}` + `/v1beta/interactions`), the SSE wire
+format (`event:` / `data:` lines, `\n\n` framing, CRLF tolerance), and
+per-provider token accounting (OpenAI/Gemini's cached-prompt **subset** vs
+Anthropic's cache_read **additive** model). The
 pricing table's per-provider cost formula is the highest-leverage place a
 small bug would silently mis-bill operators.
 
-Sibling module: [31-proxy-middleware-builtin.md](./31-proxy-middleware-builtin.md)
-— the 8 middlewares that consume this package's parsers + pricing table.
+Sibling modules: [31-proxy-middleware-builtin.md](./31-proxy-middleware-builtin.md)
+— the 8 middlewares that consume this package's parsers + pricing table;
+[50-path-routed-providers.md](./50-path-routed-providers.md) — Vertex AI,
+Bedrock, and Gemini end-to-end.
 
 ---
 
@@ -21,7 +25,8 @@ proxy-framework dependencies:
 
 - `parser.go` — `Parser` interface, `Provider` enum, public factories
   (`Parsers`, `DetectParser`, `ParserByName`).
-- `openai.go` / `anthropic.go` / `bedrock.go` — per-provider `Parser` impls.
+- `openai.go` / `anthropic.go` / `bedrock.go` / `gemini.go` — per-provider
+  `Parser` impls.
 - `sse.go` — SSE scanner (`Scanner`, `Event`, `NewScanner`).
 - `errors.go` — sentinels callers branch on with `errors.Is`.
 - `pricing/` — immutable pricing table + the per-surface cost formula. The
@@ -37,20 +42,22 @@ be reused later by a WASM adapter
 
 | File | LOC | Notes |
 |---|---:|---|
-| `parser.go` | 104 | Interface + factories + `Provider{Unknown,OpenAI,Anthropic}` enum |
+| `parser.go` | ~110 | Interface + factories + `Provider{Unknown,OpenAI,Anthropic,Bedrock,Gemini}` enum |
 | `openai.go` | 347 | Chat Completions + Completions + Responses API; cached_tokens subset |
 | `openai_test.go` | 222 | 11 tests; fixture replay + cached/Responses-API matrix |
 | `anthropic.go` | 172 | Messages + legacy `/v1/complete`; cache_read + cache_creation additive |
 | `anthropic_test.go` | 154 | 7 tests including streaming-extraction-skipped contract |
 | `bedrock.go` | 190 | AWS Bedrock InvokeModel (snake_case) + Converse (camelCase) response shapes; model lives in URL path |
 | `bedrock_test.go` | — | InvokeModel + Converse usage shapes; AWS event-stream content-type → `ErrStreamingUnsupported` on buffered `ParseResponse` |
+| `gemini.go` | — | Google Gemini API: generateContent / batchGenerateContent (sync batch) / interactions usage + prompt/completion extraction; thoughts billed as output |
+| `gemini_test.go` | — | Usage mapping per shape; batch per-result sum + aggregate fallback; interactions snake_case usage; thoughts-as-output; fixture replays |
 | `sse.go` | 117 | `bufio`-backed scanner; CRLF normalised; trailing-event handling |
 | `sse_test.go` | 175 | 12 tests; fixture replay + multiline + size limits |
 | `parser_test.go` | 53 | `Parsers()`, `DetectParser`, provider enum values |
 | `errors.go` | 31 | 6 sentinels: `Err{Unknown,Unsupported}Provider/Model`, `Err{NotLLM,Malformed}Response`, `ErrStreamingUnsupported`, `ErrMalformedRequest` |
 | `pricing/pricing.go` | 234 | `Table`, `Entry`, `EntryJSON`, `Costs`; `NewTable`/`NewEntries` validation + `EntryCosts` formula. No I/O, no reload, no embedded rates |
 | `pricing/pricing_test.go` | 177 | 10 tests — provider-shape formulas, cached clamp, rate fallback, nil-safety, rate validation |
-| `fixtures/*` | 21–59 | OAI chat/responses/stream + Anthro messages/stream |
+| `fixtures/*` | 21–59 | OAI chat/responses/stream + Anthro messages/stream + Gemini generateContent/interactions/stream |
 
 ## Request body → parser dispatch
 
@@ -89,13 +96,17 @@ entirely. This is what makes the same parser set work whether the request
 flows to OpenAI direct, to LiteLLM, to Portkey, or to any gateway with a
 non-canonical URL shape.
 
-**Path-routed providers (Vertex AI, Bedrock) bypass both `ParserByName` and
-`DetectParser`.** The model and the parser surface live in the URL path, so the
-request middleware extracts them directly (`parseVertexPath` /
-`parseBedrockPath`) before the parser-selection step. For Vertex the publisher
-segment picks the parser (`anthropic` → Anthropic parser; `google`/Gemini →
-none, request denied as unmeterable). For Bedrock the dedicated `BedrockParser`
-handles the response. Full treatment in
+**Path-routed providers (Vertex AI, Bedrock, Gemini) bypass both `ParserByName`
+and `DetectParser` for the path-carried endpoints.** The model and the parser
+surface live in the URL path, so the request middleware extracts them directly
+(`parseVertexPath` / `parseBedrockPath` / `parseGeminiPath`) before the
+parser-selection step. For Vertex the publisher segment picks the parser
+(`anthropic` → Anthropic parser; `google` → Gemini parser; a publisher with no
+parser surface → request denied as unmeterable). For Bedrock and Gemini the
+dedicated parser handles the response. The Gemini **interactions** endpoint is
+the exception — it carries no model in the path, so it routes through the
+regular `DetectParser` (`/interactions` URL hint) and `GeminiParser.ParseRequest`
+reads the model from the body. Full treatment in
 [50-path-routed-providers.md](./50-path-routed-providers.md).
 
 ## Streaming response → SSE chunker → response parser → completion + token count
@@ -111,7 +122,7 @@ sequenceDiagram
     LR->>S: NewScanner(bytes.NewReader(body))
     loop until EOF or [DONE]
         S-->>LR: Event{Type, Data}
-        LR->>P: dispatch per event.Type<br/>(OpenAI: data-only<br/>Anthropic: named events)
+        LR->>P: dispatch per event.Type<br/>(OpenAI/Gemini: data-only<br/>Anthropic: named events)
         P-->>P: accumulate completion text<br/>track usage from final frame
     end
     P-->>LR: llm.Usage + completion string
@@ -194,6 +205,42 @@ way at synth time so the two compare equal). `ParseResponse` returns
 AWS binary event-stream content-type (`application/vnd.amazon.eventstream`,
 `isAWSEventStream`) so the caller routes to the streaming accumulator instead.
 
+### Gemini
+
+[gemini.go](../../../proxy/internal/llm/gemini.go) implements the `Parser`
+interface for the Google Gemini API
+(`generativelanguage.googleapis.com`). Like Bedrock it is **path-routed** —
+`generateContent` / `streamGenerateContent` / `batchGenerateContent` carry the
+model in the URL (`/v1beta/models/{model}:{action}`), extracted by the request
+middleware's `parseGeminiPath` — so `ParseRequest` is a no-op for those
+endpoints. The one exception is **interactions** (`/v1beta/interactions`):
+the model is in the body, so `ParseRequest` reads the `model` field there.
+`ParseResponse` covers all three response shapes in one struct:
+
+- **generateContent** — `usageMetadata`: `promptTokenCount` → `InputTokens`;
+  `candidatesTokenCount` + `thoughtsTokenCount` → `OutputTokens` (thinking
+  tokens bill as output); `cachedContentTokenCount` → `CachedInputTokens`, a
+  **subset** of `promptTokenCount` like OpenAI's `cached_tokens`;
+  `totalTokenCount` → `TotalTokens` (backfilled by summation when absent).
+- **batchGenerateContent** (synchronous batch) — the per-result
+  `usageMetadata` blocks under `response.results[].response` are **summed**;
+  the aggregate mirror under `response.usageMetadata` is the fallback only
+  when no result carries usage.
+- **interactions** — snake_case `usage` block (`input_tokens`,
+  `output_tokens`, `total_tokens`, `input_tokens_details.cached_tokens`) with
+  the pointer-priority zero-honoring logic `openAICachedTokens` uses.
+
+`ProviderName()` returns `"gemini"` — its own pricing surface, sharing the
+OpenAI subset-cache formula (see the table under "Pricing table"). The surface
+is also what Vertex requests carry once the publisher maps `google` → `gemini`
+via `vertexPublisherVendor`. `ExtractPrompt` folds `systemInstruction` +
+`contents[].parts[].text` (batch expands
+`batch.input_config.requests.requests[].request`; interactions flattens
+`input` via `decodeStringOrJoin` / `extractContentParts`).
+`ExtractCompletion` concatenates `candidates[].content.parts[].text` with
+newlines. `ExtractSessionID` returns `""` — no native session marker (same
+contract as Bedrock).
+
 ### SSE framing
 
 `Scanner` is `bufio`-backed, 64 KiB read buffer, 1 MiB max line so a
@@ -234,11 +281,17 @@ is the cost formula — most security-relevant math in this module. The
 formula, never the tier the entry came from: a per-provider-record override on
 an Anthropic route still bills its cache buckets additively.
 
-| Provider | Formula |
+| Surface | Formula |
 |---|---|
-| `openai` | `(inTokens − clamped) × InputPer1K + clamped × CachedInputPer1K + outTokens × OutputPer1K` where `clamped = min(cachedInput, inTokens)` |
+| `openai`, `gemini` | `(inTokens − clamped) × InputPer1K + clamped × CachedInputPer1K + outTokens × OutputPer1K` where `clamped = min(cachedInput, inTokens)` |
 | `anthropic`, `bedrock` | `inTokens × InputPer1K + cachedInput × CacheReadPer1K + cacheCreation × CacheCreationPer1K + outTokens × OutputPer1K` |
 | default | `inTokens × InputPer1K + outTokens × OutputPer1K` |
+
+`gemini` shares the OpenAI subset-cache formula: Gemini's
+`cachedContentTokenCount` (and interactions' `cached_tokens`) is a subset of
+the prompt/input count, billed at the cached rate with the remainder at the
+full input rate
+([pricing.go](../../../proxy/internal/llm/pricing/pricing.go)).
 
 `bedrock` shares the Anthropic additive-cache formula
 ([pricing.go:214–229](../../../proxy/internal/llm/pricing/pricing.go)):
@@ -276,13 +329,14 @@ type Parser interface {
 Adding a provider means implementing this interface and appending to the
 slice returned by `Parsers()` ([parser.go:78–84](../../../proxy/internal/llm/parser.go)).
 Order matters: `DetectFromURL` ties resolve by registration order.
-`Parsers()` today returns `{OpenAIParser, AnthropicParser, BedrockParser}`.
+`Parsers()` today returns `{OpenAIParser, AnthropicParser, BedrockParser, GeminiParser}`.
 
 **`Provider` enum**
 ([parser.go:8–18](../../../proxy/internal/llm/parser.go)):
 `ProviderUnknown = 0`, `ProviderOpenAI = 1`, `ProviderAnthropic = 2`,
-`ProviderBedrock = 3`. Numeric values are persisted in nothing today but treat
-them as wire-stable — new providers must take fresh numbers.
+`ProviderBedrock = 3`, `ProviderGemini = 4`. Numeric values are persisted in
+nothing today but treat them as wire-stable — new providers must take fresh
+numbers.
 
 **`Pricing` construction + lookup**
 ([pricing.go:60–130](../../../proxy/internal/llm/pricing/pricing.go)):
@@ -402,6 +456,7 @@ right `cost.skipped` reason.
 
 | File | Tests | Coverage highlights |
 |---|---:|---|
+| `gemini_test.go` | — | Path detection (4 action hints); generateContent / batch / interactions usage; thoughts-as-output; batch sum + mirror fallback; explicit-zero cached honored; fixture replays |
 | `parser_test.go` | 3 | `Parsers()` shape lock, `DetectParser` URL matrix, provider enum stability |
 | `openai_test.go` | 11 | Chat Completions + Responses API + legacy `prompt`; cached-tokens subset for both naming conventions; fixture replays |
 | `anthropic_test.go` | 7 | Messages + legacy `/v1/complete`; streaming REJECTED on `ParseResponse` (must use scanner); fixture replays |
@@ -414,7 +469,11 @@ right `cost.skipped` reason.
 `openai_stream.txt` (3 deltas + usage + `[DONE]`),
 `anthropic_messages.json` (Messages API non-streaming),
 `anthropic_stream.txt` (full 7-event sequence: message_start →
-content_block_{start,delta×2,stop} → message_delta (usage) → message_stop).
+content_block_{start,delta×2,stop} → message_delta (usage) → message_stop),
+`gemini_generate_content.json` (usageMetadata + cached subset),
+`gemini_interactions.json` (snake_case usage block),
+`gemini_stream.txt` (3 `data:` frames + cumulative final usageMetadata, **no**
+`[DONE]` sentinel).
 No pricing fixture: the table is config-delivered, so pricing tests construct
 it in-process from a wire-shape map.
 
@@ -423,8 +482,8 @@ it in-process from a wire-shape map.
 - Sibling: [31-proxy-middleware-builtin.md](./31-proxy-middleware-builtin.md)
   — the chain that calls `llm.Parsers()`, `llm.ParserByName`,
   `llm.NewScanner`, `pricing.NewTable` / `pricing.NewEntries`.
-- Path-routed providers (Vertex AI + Bedrock), credential syntax, and the
-  Bedrock AWS event-stream accumulator:
+- Path-routed providers (Vertex AI + Bedrock + Gemini), credential syntax,
+  and the Bedrock AWS event-stream / Gemini SSE accumulators:
   [50-path-routed-providers.md](./50-path-routed-providers.md).
 - Direct callers: `llm_request_parser/middleware.go:82–94`,
   `llm_response_parser/middleware.go:113–123`,

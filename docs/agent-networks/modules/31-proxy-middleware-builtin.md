@@ -63,12 +63,16 @@ locks the ID set; adding or removing one is a conscious extension.
 Detects the LLM provider via `llm.DetectParser` (URL sniff) or by name via
 `llm.ParserByName` when synthesiser stamps `provider_id`
 ([middleware.go:96–99](../../../proxy/internal/middleware/builtin/llm_request_parser/middleware.go)).
-**Path-routed providers short-circuit first:** `parseVertexPath` and
-`parseBedrockPath` ([middleware.go:85–94](../../../proxy/internal/middleware/builtin/llm_request_parser/middleware.go))
+**Path-routed providers short-circuit first:** `parseVertexPath`,
+`parseBedrockPath`, and `parseGeminiPath`
+([middleware.go:85–94](../../../proxy/internal/middleware/builtin/llm_request_parser/middleware.go))
 pull the model + vendor out of the URL before parser selection runs — Vertex
 from `/v1/projects/.../publishers/{pub}/models/{model}:{action}` (publisher →
-vendor via `vertexPublisherVendor`), Bedrock from `/model/{id}/{action}` with
-`normalizeBedrockModel` stripping the region prefix + version suffix. See
+vendor via `vertexPublisherVendor`, where `google` maps to the `gemini`
+surface), Bedrock from `/model/{id}/{action}` with `normalizeBedrockModel`
+stripping the region prefix + version suffix, Gemini from
+`/v1beta/models/{model}:{action}` with `NormalizeGeminiModel` stripping the
+`@version` suffix. See
 [50-path-routed-providers.md](./50-path-routed-providers.md) for the full path
 grammar. For body-routed providers it decodes the body into `RequestFacts`
 (model + stream) and extracts the prompt. On
@@ -94,15 +98,17 @@ strip+inject rides on `UpstreamRewrite.{StripHeaders,AuthHeader}`
 blocks `Authorization` on the generic header path.
 
 **Path-routed providers route before the model table.** `Invoke` checks
-`isVertexPath` / `isBedrockPath`
+`isVertexPath` / `isBedrockPath` / `isGeminiPath`
 ([middleware.go:138–216](../../../proxy/internal/middleware/builtin/llm_router/middleware.go))
 ahead of the model lookup, so a path-carried model can't be claimed by a
 same-vendor body-routed provider. `matchPathRoute` enforces the route's `Models`
 allowlist (empty = catch-all) even though the model came from the URL.
 Two path-only behaviours:
 - **Vertex unmeterable publisher** — when `llm_request_parser` emits no
-  `llm.provider` (e.g. Gemini/`google`), the router denies with
-  `llm_policy.unmeterable_publisher` (403) rather than forward it uncounted.
+  `llm.provider` (a publisher with no parser surface, e.g. `mistralai`), the
+  router denies with `llm_policy.unmeterable_publisher` (403) rather than
+  forward it uncounted. The `google` publisher now resolves to the `gemini`
+  surface and is metered.
 - **GCP token minting** — when the route carries `GCPServiceAccountKeyB64`
   (set from a `keyfile::` api_key), `gcpBearer` mints + caches a short-lived
   OAuth2 token per request instead of injecting a static value; a bad key or

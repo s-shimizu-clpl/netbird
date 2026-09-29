@@ -770,6 +770,37 @@ func TestSynthesizeServices_IdentityInject_Portkey_NotCustomizable(t *testing.T)
 		"same fixed-schema guarantee for the groups dimension")
 }
 
+// TestBuildRouterConfigJSON_GeminiRoute pins the Gemini wire flags: the
+// route carries gemini=true so the proxy selects it by path, and the
+// credential lands under x-goog-api-key (the header the Gemini API reads),
+// not the Bearer shape other Google entries use.
+func TestBuildRouterConfigJSON_GeminiRoute(t *testing.T) {
+	provider := &types.Provider{
+		ID:          "prov-gemini",
+		ProviderID:  "gemini_api",
+		UpstreamURL: "https://generativelanguage.googleapis.com",
+		APIKey:      "AIza-test-key",
+	}
+
+	raw, err := buildRouterConfigJSON(
+		[]*types.Provider{provider},
+		map[string][]string{provider.ID: {"grp-eng"}},
+		nil,
+	)
+	require.NoError(t, err)
+
+	var cfg routerConfig
+	require.NoError(t, json.Unmarshal(raw, &cfg))
+	require.Len(t, cfg.Providers, 1)
+	route := cfg.Providers[0]
+	assert.True(t, route.Gemini, "gemini route flag must be set for the gemini_api catalog entry")
+	assert.False(t, route.Vertex, "gemini must not claim the vertex path style")
+	assert.False(t, route.Bedrock, "gemini must not claim the bedrock path style")
+	assert.Equal(t, "x-goog-api-key", route.AuthHeaderName)
+	assert.Equal(t, "AIza-test-key", route.AuthHeaderValue,
+		"the template injects the bare key — no Bearer prefix")
+}
+
 // TestSynthesizeServices_IdentityInject_Bedrock pins Bedrock's cost-allocation
 // metadata: a JSONMetadata shape emitting X-Amzn-Bedrock-Request-Metadata with
 // the reserved user/group keys, sanitized to Bedrock's accepted charset.

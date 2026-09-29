@@ -212,6 +212,68 @@ func TestCostCalculation_ProviderMatrix(t *testing.T) {
 			wantCost:     0.0021,
 		},
 		{
+			// Gemini generateContent usageMetadata; cachedContentTokenCount is a SUBSET of the prompt at a
+			// discount (openai-style carve-out). gemini-2.5-pro $1.25/$10 per MTok, cached $0.125/M:
+			// 800×1.25/1M + 200×0.125/1M + 500×10/1M = $0.006025.
+			name:          "gemini generateContent cached subset",
+			url:           "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent",
+			reqBody:       []byte(`{"contents":[{"parts":[{"text":"hi"}]}]}`),
+			respCT:        jsonCT,
+			respBody:      []byte(`{"candidates":[{"content":{"parts":[{"text":"pong"}]}}],"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":500,"totalTokenCount":1500,"cachedContentTokenCount":200}}`),
+			wantProvider:  "gemini",
+			wantModel:     "gemini-2.5-pro",
+			wantCost:      0.006025,
+			wantCacheCost: 0.000025,
+		},
+		{
+			// streamGenerateContent SSE: data-only frames, no [DONE] sentinel; usage rides the final
+			// (cumulative) usageMetadata frame. gemini-3-flash-preview $0.5/$3 per MTok: 1000×0.5/1M + 500×3/1M.
+			name:         "gemini stream SSE no [DONE]",
+			url:          "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:streamGenerateContent",
+			reqBody:      []byte(`{"contents":[{"parts":[{"text":"hi"}]}]}`),
+			respCT:       sseCT,
+			respBody:     sseBody(`{"candidates":[{"content":{"parts":[{"text":"po"}],"role":"model"}}]}`, `{"candidates":[{"content":{"parts":[{"text":"ng"}],"role":"model"}}],"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":500,"totalTokenCount":1500}}`),
+			wantProvider: "gemini",
+			wantModel:    "gemini-3-flash-preview",
+			wantCost:     0.002,
+		},
+		{
+			// Synchronous batch: per-result usageMetadata summed; the response-level mirror would overstate
+			// and must be ignored when results carry usage. gemini-2.5-flash-lite $0.1/$0.4 per MTok: 2000×0.1/1M + 1000×0.4/1M.
+			name:         "gemini batchGenerateContent sum",
+			url:          "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:batchGenerateContent",
+			reqBody:      []byte(`{"batch":{"display_name":"b","input_config":{"requests":{"requests":[{"request":{"contents":[{"parts":[{"text":"a"}]}]}}]}}}}`),
+			respCT:       jsonCT,
+			respBody:     []byte(`{"response":{"results":[{"response":{"usageMetadata":{"promptTokenCount":1200,"candidatesTokenCount":600}}},{"response":{"usageMetadata":{"promptTokenCount":800,"candidatesTokenCount":400}}}],"usageMetadata":{"promptTokenCount":9999,"candidatesTokenCount":9999}}}`),
+			wantProvider: "gemini",
+			wantModel:    "gemini-2.5-flash-lite",
+			wantCost:     0.0006,
+		},
+		{
+			// Interactions endpoint: model carried in the body, snake_case usage block.
+			// gemini-2.5-flash $0.30/$2.50 per MTok: 1000×0.3/1M + 500×2.5/1M.
+			name:         "gemini interactions body model",
+			url:          "https://generativelanguage.googleapis.com/v1beta/interactions",
+			reqBody:      []byte(`{"model":"gemini-2.5-flash","input":"hi"}`),
+			respCT:       jsonCT,
+			respBody:     []byte(`{"model":"gemini-2.5-flash","usage":{"input_tokens":1000,"output_tokens":500,"total_tokens":1500}}`),
+			wantProvider: "gemini",
+			wantModel:    "gemini-2.5-flash",
+			wantCost:     0.00155,
+		},
+		{
+			// Vertex google publisher → gemini surface (the meterable-publisher unlock); billed at the
+			// first-party gemini_api rates. gemini-3.1-pro-preview $2/$12 per MTok: 1000×2/1M + 500×12/1M.
+			name:         "vertex google publisher gemini surface",
+			url:          "https://aiplatform.googleapis.com/v1/projects/p/locations/global/publishers/google/models/gemini-3.1-pro-preview:generateContent",
+			reqBody:      []byte(`{"contents":[{"parts":[{"text":"hi"}]}]}`),
+			respCT:       jsonCT,
+			respBody:     []byte(`{"candidates":[{"content":{"parts":[{"text":"pong"}]}}],"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":500,"totalTokenCount":1500}}`),
+			wantProvider: "gemini",
+			wantModel:    "gemini-3.1-pro-preview",
+			wantCost:     0.008,
+		},
+		{
 			// Gateway-prefixed model ids are not in the pricing table: the meter must SKIP, never guess a rate.
 			name:         "gateway-prefixed model skips pricing",
 			url:          "https://gateway.example.com/v1/chat/completions",

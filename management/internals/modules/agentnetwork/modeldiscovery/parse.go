@@ -128,6 +128,8 @@ func normalizeForPricing(catalogProviderID, modelID string) string {
 		return sharedllm.NormalizeBedrockModel(modelID)
 	case catalog.IsVertexPathStyle(catalogProviderID):
 		return sharedllm.NormalizeVertexModel(modelID)
+	case catalog.IsGeminiProvider(catalogProviderID):
+		return sharedllm.NormalizeGeminiModel(modelID)
 	default:
 		return modelID
 	}

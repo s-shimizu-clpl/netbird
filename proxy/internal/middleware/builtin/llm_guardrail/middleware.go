@@ -27,9 +27,9 @@ const (
 	denyMessageModel = "model is not in the policy allowlist"
 	// Deny reason used when an allowlist is configured but the request model
 	// could not be determined. URL/path-routed providers (AWS Bedrock, Google
-	// Vertex, ...) carry the model outside the JSON body, so a request shape the
-	// parser does not recognise reaches the guardrail with no model. Such a
-	// request must be denied (fail closed), never waved through.
+	// Vertex, Google Gemini, ...) carry the model outside the JSON body, so a
+	// request shape the parser does not recognise reaches the guardrail with no
+	// model. Such a request must be denied (fail closed), never waved through.
 	denyCodeModelUnknown    = "llm_policy.model_unknown"
 	denyReasonModelUnknown  = "model_unknown"
 	denyMessageModelUnknown = "request model could not be determined for the policy allowlist"
@@ -132,9 +132,9 @@ func (m *Middleware) evaluateAllowlist(providerID, surface, model string, modelP
 		// unrestricted); management owns any per-policy/group decision.
 		return nil
 	}
-	// Fail closed: with an allowlist in effect for this provider, a request whose
-	// model the parser couldn't extract (absent/empty) is denied. This enforces
-	// the allowlist for path-routed providers (Bedrock, Vertex) with no body model.
+	// Fail closed: with an allowlist in effect, a request whose model the parser
+	// couldn't extract is denied, which is what enforces the allowlist for the
+	// path-routed providers (Bedrock, Vertex, Gemini) that carry no body model.
 	//
 	// The exception is a non-inference endpoint the router already authorised.
 	// The model listing and the connection-warming probe name no model

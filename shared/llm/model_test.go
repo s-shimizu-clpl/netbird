@@ -35,6 +35,20 @@ func TestNormalizeVertexModel(t *testing.T) {
 	}
 }
 
+func TestNormalizeGeminiModel(t *testing.T) {
+	cases := map[string]string{
+		"gemini-2.5-pro@latest":        "gemini-2.5-pro",
+		"gemini-3.1-pro-preview@2026":  "gemini-3.1-pro-preview",
+		"gemini-2.5-flash":             "gemini-2.5-flash",
+		"gemini-3-flash-preview":       "gemini-3-flash-preview",
+		"gemini-embedding-001@v1alpha": "gemini-embedding-001",
+		"":                             "",
+	}
+	for in, want := range cases {
+		require.Equal(t, want, NormalizeGeminiModel(in), "normalize %q", in)
+	}
+}
+
 func TestNormalizeAnthropicModel(t *testing.T) {
 	cases := map[string]string{
 		"claude-sonnet-4-5-20250929":            "claude-sonnet-4-5",

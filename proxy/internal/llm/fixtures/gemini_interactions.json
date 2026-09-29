@@ -1,0 +1,24 @@
+{
+  "id": "int_01abc",
+  "model": "gemini-3-flash-preview",
+  "status": "completed",
+  "steps": [
+    {
+      "type": "model_output",
+      "content": [
+        {
+          "type": "text",
+          "text": "Hello! How can I help you today?"
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 20,
+    "total_tokens": 30,
+    "input_tokens_details": {
+      "cached_tokens": 4
+    }
+  }
+}

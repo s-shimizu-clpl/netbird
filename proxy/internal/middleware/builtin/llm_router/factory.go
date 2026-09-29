@@ -69,6 +69,13 @@ type ProviderRoute struct {
 	// by path (isBedrockPath) and bypasses the model/vendor table; auth is the
 	// static AuthHeaderValue bearer token (no token minting).
 	Bedrock bool `json:"bedrock,omitempty"`
+	// Gemini marks a Google Gemini API provider (generativelanguage.
+	// googleapis.com). Gemini model requests carry the model in the URL path
+	// (/v1beta/models/{model}:{action}), so the router selects this route by
+	// path (isGeminiPath) and bypasses the model/vendor table. The interactions
+	// endpoint carries the model in the body and routes through the regular
+	// model table instead.
+	Gemini bool `json:"gemini,omitempty"`
 	// GCPServiceAccountKeyB64 is a base64-encoded GCP service-account JSON
 	// key. When set, the router mints + refreshes a short-lived OAuth2 access
 	// token from it at request time and injects it as the auth header value

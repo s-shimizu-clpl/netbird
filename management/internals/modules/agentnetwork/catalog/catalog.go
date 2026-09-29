@@ -157,10 +157,10 @@ const (
 // one from the caller is also what keeps this from being an open proxy: the
 // only hosts management will dial are the ones written here.
 type Discovery struct {
-	Host            string
-	Path            string
-	Query           string
-	Shape           ListingShape
+	Host  string
+	Path  string
+	Query string
+	Shape ListingShape
 	// ExactModelsOnly omits wildcard patterns from listings when NetBird's
 	// provider model rows cannot represent the vendor's matching semantics.
 	ExactModelsOnly bool
@@ -499,14 +499,12 @@ var providers = []Provider{
 		PricingSurfaces: []string{"anthropic"},
 		// Vertex carries the model in the URL path and authenticates with a
 		// service-account-minted OAuth token (api_key = "keyfile::<base64 SA>").
-		// Only Anthropic-on-Vertex is metered today: the request parser maps the
-		// anthropic publisher to the Anthropic parser, so the lineup + prices
-		// mirror the first-party Anthropic catalog (LiteLLM vertex_ai/claude-*
-		// confirms the same per-token rates; cross-region profiles in eu/apac
-		// carry a ~10% premium that base pricing does not model). Gemini (the
-		// google publisher) is intentionally omitted until a Gemini parser
-		// exists — the router denies unmeterable publishers rather than forward
-		// them uncounted.
+		// The anthropic publisher meters on the "anthropic" surface (the lineup
+		// + prices above mirror the first-party Anthropic catalog; LiteLLM
+		// vertex_ai/claude-* confirms the same per-token rates; cross-region
+		// profiles in eu/apac carry a ~10% premium that base pricing does not
+		// model). The google publisher meters on the "gemini" surface at the
+		// first-party Gemini API rates — see the gemini_api entry below.
 		Models: []Model{
 			{ID: "claude-opus-5", Label: "Claude Opus 5 (Vertex)", InputPer1k: 0.005, OutputPer1k: 0.025, CacheReadPer1k: 0.0005, CacheCreationPer1k: 0.00625, ContextWindow: 1000000},
 			{ID: "claude-sonnet-5", Label: "Claude Sonnet 5 (Vertex)", InputPer1k: 0.003, OutputPer1k: 0.015, CacheReadPer1k: 0.0003, CacheCreationPer1k: 0.00375, ContextWindow: 1000000},
@@ -518,6 +516,35 @@ var providers = []Provider{
 			{ID: "claude-sonnet-4-6", Label: "Claude Sonnet 4.6 (Vertex)", InputPer1k: 0.003, OutputPer1k: 0.015, CacheReadPer1k: 0.0003, CacheCreationPer1k: 0.00375, ContextWindow: 1000000},
 			{ID: "claude-sonnet-4-5", Label: "Claude Sonnet 4.5 (Vertex)", InputPer1k: 0.003, OutputPer1k: 0.015, CacheReadPer1k: 0.0003, CacheCreationPer1k: 0.00375, ContextWindow: 200000},
 			{ID: "claude-haiku-4-5", Label: "Claude Haiku 4.5 (Vertex)", InputPer1k: 0.001, OutputPer1k: 0.005, CacheReadPer1k: 0.0001, CacheCreationPer1k: 0.00125, ContextWindow: 200000},
+		},
+	},
+	{
+		ID:                 "gemini_api",
+		Kind:               KindProvider,
+		Name:               "Google Gemini API",
+		Description:        "Gemini models via the generative language API",
+		DefaultHost:        "generativelanguage.googleapis.com",
+		AuthHeaderName:     "x-goog-api-key",
+		AuthHeaderTemplate: "${API_KEY}",
+		DefaultContentType: "application/json",
+		BrandColor:         "#4285F4",
+		// ParserID stays empty (path-style dispatch via IsGeminiProvider);
+		// the request parser meters these under the "gemini" surface.
+		PricingSurfaces: []string{"gemini"},
+		// The Gemini API carries the model in the URL path
+		// (/v1beta/models/{model}:{action}) and authenticates with an API key
+		// under x-goog-api-key. Prices are the standard-tier rates from
+		// Google's pricing page; Pro models bill a higher tier above 200K
+		// prompt tokens, which base pricing does not model (the low tier is
+		// registered). Vertex google-publisher requests bill at these same
+		// rates.
+		Models: []Model{
+			{ID: "gemini-3.1-pro-preview", Label: "Gemini 3.1 Pro (preview)", InputPer1k: 0.002, OutputPer1k: 0.012, CachedInputPer1k: 0.0002, ContextWindow: 1000000},
+			{ID: "gemini-3-flash-preview", Label: "Gemini 3 Flash (preview)", InputPer1k: 0.0005, OutputPer1k: 0.003, CachedInputPer1k: 0.00005, ContextWindow: 1000000},
+			{ID: "gemini-2.5-pro", Label: "Gemini 2.5 Pro", InputPer1k: 0.00125, OutputPer1k: 0.010, CachedInputPer1k: 0.000125, ContextWindow: 1000000},
+			{ID: "gemini-2.5-flash", Label: "Gemini 2.5 Flash", InputPer1k: 0.0003, OutputPer1k: 0.0025, CachedInputPer1k: 0.00003, ContextWindow: 1000000},
+			{ID: "gemini-2.5-flash-lite", Label: "Gemini 2.5 Flash-Lite", InputPer1k: 0.0001, OutputPer1k: 0.0004, CachedInputPer1k: 0.00001, ContextWindow: 1000000},
+			{ID: "gemini-embedding-001", Label: "Gemini Embedding 001", InputPer1k: 0.00015, OutputPer1k: 0, ContextWindow: 8191},
 		},
 	},
 	{
@@ -933,6 +960,15 @@ func IsVertexPathStyle(providerID string) bool {
 // converse-stream) rather than the body, so the proxy routes it by path.
 func IsBedrockPathStyle(providerID string) bool {
 	return providerID == "bedrock_api"
+}
+
+// IsGeminiProvider reports whether a provider uses the Google Gemini API
+// shape — model requests carry the model in the URL path
+// (/v1beta/models/{model}:{action}) rather than the body, so the proxy
+// routes them by path. The interactions endpoint is the exception: it names
+// the model in the body and routes through the regular model table.
+func IsGeminiProvider(providerID string) bool {
+	return providerID == "gemini_api"
 }
 
 // ToAPIResponse renders a catalog provider as the API representation.
