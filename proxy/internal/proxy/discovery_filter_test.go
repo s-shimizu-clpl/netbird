@@ -263,10 +263,33 @@ func TestFilterBedrockInferenceProfiles(t *testing.T) {
 	assert.Equal(t, "eu.anthropic.claude-haiku-4-5-20251001-v1:0", doc.Summaries[0].ID)
 }
 
+// TestFilterGeminiModels covers the Google AI Studio listing envelope.
+func TestFilterGeminiModels(t *testing.T) {
+	body := []byte(`{"models":[
+	  {"name":"models/gemini-1.5-flash","displayName":"Gemini 1.5 Flash"},
+	  {"name":"models/gemini-1.5-pro","displayName":"Gemini 1.5 Pro"},
+	  {"name":"models/gemini-2.0-flash-exp","displayName":"Gemini 2.0 Flash Exp"}
+	]}`)
+
+	permitted := map[string]struct{}{"gemini-1.5-flash": {}}
+
+	out, ok := filterListingBody(body, permitted)
+	require.True(t, ok, "a Gemini listing must be recognised as filterable")
+
+	var doc struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	require.NoError(t, json.Unmarshal(out, &doc))
+	require.Len(t, doc.Models, 1)
+	assert.Equal(t, "models/gemini-1.5-flash", doc.Models[0].Name)
+}
+
 // TestFilterLeavesUnknownEnvelopesAlone keeps the best-effort contract: a body
 // the filter cannot parse must reach the client exactly as the upstream sent
 // it, rather than being rewritten into something shorter and wrong.
 func TestFilterLeavesUnknownEnvelopesAlone(t *testing.T) {
-	_, ok := filterListingBody([]byte(`{"models":[{"name":"something"}]}`), map[string]struct{}{})
+	_, ok := filterListingBody([]byte(`{"items":[{"custom_name":"something"}]}`), map[string]struct{}{})
 	assert.False(t, ok)
 }

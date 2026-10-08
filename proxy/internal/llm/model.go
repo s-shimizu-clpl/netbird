@@ -27,3 +27,10 @@ func NormalizeAnthropicModel(modelID string) string {
 func NormalizeVertexModel(modelID string) string {
 	return sharedllm.NormalizeVertexModel(modelID)
 }
+
+// NormalizeGeminiModel strips the "models/" resource path prefix, an "@version"
+// suffix, and any trailing release suffix from a Gemini model id so it
+// matches the catalog/pricing key. Thin delegate to shared/llm.
+func NormalizeGeminiModel(modelID string) string {
+	return sharedllm.NormalizeGeminiModel(modelID)
+}

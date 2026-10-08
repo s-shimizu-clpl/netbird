@@ -26,6 +26,8 @@ func accumulateStream(provider string, body []byte) (llm.Usage, string) {
 		return accumulateAnthropicStream(body)
 	case llm.ProviderNameBedrock:
 		return accumulateBedrockStream(body)
+	case llm.ProviderNameGemini:
+		return accumulateGeminiStream(body)
 	default:
 		return llm.Usage{}, ""
 	}
@@ -267,4 +269,76 @@ func derefInt64(v *int64) int64 {
 		return 0
 	}
 	return *v
+}
+
+type geminiStreamChunk struct {
+	Candidates []struct {
+		Content struct {
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"content"`
+	} `json:"candidates"`
+	UsageMetadata *struct {
+		PromptTokenCount        *int64 `json:"promptTokenCount"`
+		CandidatesTokenCount    *int64 `json:"candidatesTokenCount"`
+		TotalTokenCount         *int64 `json:"totalTokenCount"`
+		CachedContentTokenCount *int64 `json:"cachedContentTokenCount"`
+	} `json:"usageMetadata"`
+}
+
+// accumulateGeminiStream walks the SSE frames of a Gemini streaming response,
+// concatenating text parts and reading usage metadata.
+func accumulateGeminiStream(body []byte) (llm.Usage, string) {
+	var (
+		usage      llm.Usage
+		completion strings.Builder
+	)
+	scanner := llm.NewScanner(bytes.NewReader(body))
+	for {
+		ev, err := scanner.Next()
+		if err != nil {
+			break
+		}
+		if ev.Data == "" {
+			continue
+		}
+
+		data := bytes.TrimSpace([]byte(ev.Data))
+		var chunks []geminiStreamChunk
+		if len(data) > 0 && data[0] == '[' {
+			_ = json.Unmarshal(data, &chunks)
+		} else {
+			var single geminiStreamChunk
+			if err := json.Unmarshal(data, &single); err == nil {
+				chunks = []geminiStreamChunk{single}
+			}
+		}
+
+		for _, chunk := range chunks {
+			for _, c := range chunk.Candidates {
+				for _, p := range c.Content.Parts {
+					completion.WriteString(p.Text)
+				}
+			}
+			if chunk.UsageMetadata != nil {
+				if v := derefInt64(chunk.UsageMetadata.PromptTokenCount); v > 0 {
+					usage.InputTokens = v
+				}
+				if v := derefInt64(chunk.UsageMetadata.CandidatesTokenCount); v > 0 {
+					usage.OutputTokens = v
+				}
+				if v := derefInt64(chunk.UsageMetadata.CachedContentTokenCount); v > 0 {
+					usage.CachedInputTokens = v
+				}
+				if v := derefInt64(chunk.UsageMetadata.TotalTokenCount); v > 0 {
+					usage.TotalTokens = v
+				}
+			}
+		}
+	}
+	if usage.TotalTokens == 0 && (usage.InputTokens > 0 || usage.OutputTokens > 0) {
+		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+	}
+	return usage, completion.String()
 }

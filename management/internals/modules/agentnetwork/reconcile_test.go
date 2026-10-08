@@ -6,9 +6,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"go.uber.org/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/netbirdio/netbird/management/internals/modules/agentnetwork/types"
 	"github.com/netbirdio/netbird/management/internals/modules/reverseproxy/proxy"
@@ -440,4 +440,5 @@ func (unsyncedSender) GetOIDCValidationConfig() proxy.OIDCValidationConfig {
 	return proxy.OIDCValidationConfig{}
 }
 
-func (unsyncedSender) SendServiceUpdateToCluster(context.Context, string, *proto.ProxyMapping, string) {}
+func (unsyncedSender) SendServiceUpdateToCluster(context.Context, string, *proto.ProxyMapping, string) {
+}

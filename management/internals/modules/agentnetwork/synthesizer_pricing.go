@@ -3,6 +3,7 @@ package agentnetwork
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/netbirdio/netbird/management/internals/modules/agentnetwork/catalog"
 	"github.com/netbirdio/netbird/management/internals/modules/agentnetwork/pricing"
@@ -104,7 +105,12 @@ func normalizePricingModelID(catalogProviderID, modelID string) string {
 	switch {
 	case catalog.IsBedrockPathStyle(catalogProviderID):
 		return sharedllm.NormalizeBedrockModel(modelID)
+	case catalog.IsGeminiPathStyle(catalogProviderID):
+		return sharedllm.NormalizeGeminiModel(modelID)
 	case catalog.IsVertexPathStyle(catalogProviderID):
+		if strings.HasPrefix(sharedllm.NormalizeGeminiModel(modelID), "gemini-") {
+			return sharedllm.NormalizeGeminiModel(modelID)
+		}
 		return sharedllm.NormalizeVertexModel(modelID)
 	default:
 		return modelID

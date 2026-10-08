@@ -118,3 +118,24 @@ func TestNormalizeBedrockModel_RecognisesAnIdNewOnOneAxis(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeGeminiModel(t *testing.T) {
+	cases := map[string]string{
+		"gemini-2.5-flash":                              "gemini-2.5-flash",
+		"gemini-2.5-pro":                                "gemini-2.5-pro",
+		"models/gemini-2.5-flash":                       "gemini-2.5-flash",
+		"models/gemini-1.5-pro-001":                     "gemini-1.5-pro",
+		"models/gemini-1.5-pro-002":                     "gemini-1.5-pro",
+		"gemini-1.5-flash-001":                          "gemini-1.5-flash",
+		"gemini-1.5-flash-latest":                       "gemini-1.5-flash",
+		"gemini-2.5-flash@001":                          "gemini-2.5-flash",
+		"publishers/google/models/gemini-2.5-flash":     "gemini-2.5-flash",
+		"publishers/google/models/gemini-2.5-flash@001": "gemini-2.5-flash",
+		"custom-model":                                  "custom-model",
+	}
+	for in, want := range cases {
+		t.Run(in, func(t *testing.T) {
+			require.Equal(t, want, NormalizeGeminiModel(in))
+		})
+	}
+}

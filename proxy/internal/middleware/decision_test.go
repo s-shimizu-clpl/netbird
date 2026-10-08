@@ -90,3 +90,20 @@ func TestRenderDeny_NoSurfaceKeepsLegacyShape(t *testing.T) {
 	assert.NotContains(t, body, "error", "no surface means no vendor mirror")
 	assert.Equal(t, "llm_policy.model_not_routable", body["code"])
 }
+
+func TestRenderDeny_GeminiSurfaceMirrorsVendorShape(t *testing.T) {
+	body, status := decodeDeny(t, &DenyReason{
+		Code:    "llm_policy.budget_cap_exceeded",
+		Message: "LLM policy limit exceeded",
+		Surface: "gemini",
+	}, http.StatusForbidden)
+
+	assert.Equal(t, http.StatusForbidden, status)
+	assert.NotContains(t, body, "type", "Gemini errors have no top-level type")
+
+	errObj, ok := body["error"].(map[string]any)
+	require.True(t, ok, "error must be an object")
+	assert.Equal(t, float64(403), errObj["code"])
+	assert.Equal(t, "PERMISSION_DENIED", errObj["status"])
+	assert.Equal(t, "LLM policy limit exceeded", errObj["message"])
+}

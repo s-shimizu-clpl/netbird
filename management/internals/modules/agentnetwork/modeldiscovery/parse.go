@@ -28,6 +28,8 @@ func parseListing(shape catalog.ListingShape, body []byte) ([]listedModel, error
 		return parseBedrockInferenceProfiles(body)
 	case catalog.ShapeVertexPublisherModels:
 		return parseVertexPublisherModels(body)
+	case catalog.ShapeGeminiModels:
+		return parseGeminiModels(body)
 	default:
 		return nil, fmt.Errorf("no parser for listing shape %q", shape)
 	}
@@ -118,6 +120,36 @@ func parseVertexPublisherModels(body []byte) ([]listedModel, error) {
 	return out, nil
 }
 
+// parseGeminiModels reads {"models":[{"name":…,"displayName":…}]}, which Google
+// AI Studio returns for GET /v1beta/models.
+func parseGeminiModels(body []byte) ([]listedModel, error) {
+	var doc struct {
+		Models []struct {
+			Name        string `json:"name"`
+			DisplayName string `json:"displayName"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return nil, fmt.Errorf("%w: decode gemini model listing: %w", ErrUnparseableListing, err)
+	}
+	out := make([]listedModel, 0, len(doc.Models))
+	for _, entry := range doc.Models {
+		id := entry.Name
+		if slash := strings.LastIndex(id, "/"); slash >= 0 {
+			id = id[slash+1:]
+		}
+		if id == "" {
+			continue
+		}
+		label := entry.DisplayName
+		if label == "" {
+			label = id
+		}
+		out = append(out, listedModel{id: id, label: label})
+	}
+	return out, nil
+}
+
 // normalizeForPricing maps a vendor's wire id onto the key the catalog prices
 // it under. It mirrors the synthesiser's normalizePricingModelID: the two must
 // agree, or a model reported here as priced would meter at the default rate
@@ -126,7 +158,12 @@ func normalizeForPricing(catalogProviderID, modelID string) string {
 	switch {
 	case catalog.IsBedrockPathStyle(catalogProviderID):
 		return sharedllm.NormalizeBedrockModel(modelID)
+	case catalog.IsGeminiPathStyle(catalogProviderID):
+		return sharedllm.NormalizeGeminiModel(modelID)
 	case catalog.IsVertexPathStyle(catalogProviderID):
+		if strings.HasPrefix(sharedllm.NormalizeGeminiModel(modelID), "gemini-") {
+			return sharedllm.NormalizeGeminiModel(modelID)
+		}
 		return sharedllm.NormalizeVertexModel(modelID)
 	default:
 		return modelID

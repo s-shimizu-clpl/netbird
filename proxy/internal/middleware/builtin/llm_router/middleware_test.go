@@ -1347,3 +1347,90 @@ func TestRouter_DiscoveryOnGatewayRecord(t *testing.T) {
 			"nothing narrows the listing, so the upstream's own answer passes through")
 	})
 }
+
+func TestRouter_Gemini(t *testing.T) {
+	const eng = "grp-eng"
+	route := ProviderRoute{
+		ID:              "gemini-studio",
+		Vendor:          "gemini",
+		Models:          []string{"gemini-1.5-flash", "gemini-1.5-pro"},
+		AllowedGroupIDs: []string{eng},
+		UpstreamScheme:  "https",
+		UpstreamHost:    "generativelanguage.googleapis.com",
+		AuthHeaderName:  "x-goog-api-key",
+		AuthHeaderValue: "AIzaSyTestKey123",
+	}
+	mw := New(Config{Providers: []ProviderRoute{route}})
+
+	t.Run("inference request by model", func(t *testing.T) {
+		in := &middleware.Input{
+			Slot: middleware.SlotOnRequest,
+			Metadata: []middleware.KV{
+				{Key: middleware.KeyLLMProvider, Value: "gemini"},
+				{Key: middleware.KeyLLMModel, Value: "gemini-1.5-flash"},
+			},
+			UserGroups: []string{eng},
+		}
+		out, err := mw.Invoke(context.Background(), in)
+		require.NoError(t, err)
+		require.NotNil(t, out)
+		assert.Equal(t, middleware.DecisionAllow, out.Decision)
+		require.NotNil(t, out.Mutations)
+		require.NotNil(t, out.Mutations.RewriteUpstream)
+		assert.Equal(t, "generativelanguage.googleapis.com", out.Mutations.RewriteUpstream.Host)
+		assert.Contains(t, out.Mutations.RewriteUpstream.StripHeaders, "x-goog-api-key")
+		require.NotNil(t, out.Mutations.RewriteUpstream.AuthHeader)
+		assert.Equal(t, "x-goog-api-key", out.Mutations.RewriteUpstream.AuthHeader.Name)
+		assert.Equal(t, "AIzaSyTestKey123", out.Mutations.RewriteUpstream.AuthHeader.Value)
+	})
+
+	t.Run("inference model alias matching", func(t *testing.T) {
+		in := &middleware.Input{
+			Slot: middleware.SlotOnRequest,
+			Metadata: []middleware.KV{
+				{Key: middleware.KeyLLMProvider, Value: "gemini"},
+				{Key: middleware.KeyLLMModel, Value: "gemini-1.5-flash-latest"},
+			},
+			UserGroups: []string{eng},
+		}
+		out, err := mw.Invoke(context.Background(), in)
+		require.NoError(t, err)
+		assert.Equal(t, middleware.DecisionAllow, out.Decision)
+	})
+
+	t.Run("gemini model listing", func(t *testing.T) {
+		in := newModellessInput(geminiModelListingPath)
+		in.UserGroups = []string{eng}
+		out, err := mw.Invoke(context.Background(), in)
+		require.NoError(t, err)
+		require.NotNil(t, out)
+		assert.Equal(t, middleware.DecisionAllow, out.Decision)
+		require.NotNil(t, out.Mutations.RewriteUpstream)
+		assert.Equal(t, "generativelanguage.googleapis.com", out.Mutations.RewriteUpstream.Host)
+	})
+
+	t.Run("gemini model detail lookup", func(t *testing.T) {
+		in := newModellessInput(geminiModelListingPath + "/gemini-1.5-flash")
+		in.UserGroups = []string{eng}
+		out, err := mw.Invoke(context.Background(), in)
+		require.NoError(t, err)
+		require.NotNil(t, out)
+		assert.Equal(t, middleware.DecisionAllow, out.Decision)
+		val, ok := metaValue(t, out.Metadata, middleware.KeyLLMNonInference)
+		assert.True(t, ok)
+		assert.Equal(t, "true", val)
+		mVal, ok := metaValue(t, out.Metadata, middleware.KeyLLMModel)
+		assert.True(t, ok)
+		assert.Equal(t, "gemini-1.5-flash", mVal)
+	})
+
+	t.Run("gemini generateContent action is not model detail", func(t *testing.T) {
+		// A GET with action suffix should NOT be matched as model detail.
+		in := newModellessInput(geminiModelListingPath + "/gemini-1.5-flash:generateContent")
+		in.UserGroups = []string{eng}
+		out, err := mw.Invoke(context.Background(), in)
+		require.NoError(t, err)
+		require.NotNil(t, out)
+		assert.Equal(t, middleware.DecisionDeny, out.Decision)
+	})
+}

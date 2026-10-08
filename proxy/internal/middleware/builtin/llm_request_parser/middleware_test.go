@@ -521,3 +521,126 @@ func TestInvoke_EmitsAgentIDs(t *testing.T) {
 		assert.False(t, ok, "no key is emitted when the client sends no agent id")
 	})
 }
+
+func TestParseGeminiPath(t *testing.T) {
+	cases := map[string]struct {
+		model  string
+		stream bool
+	}{
+		"/v1beta/models/gemini-1.5-flash:generateContent":        {model: "gemini-1.5-flash", stream: false},
+		"/v1beta/models/gemini-1.5-flash:streamGenerateContent":  {model: "gemini-1.5-flash", stream: true},
+		"/v1/models/gemini-1.5-pro:generateContent?alt=sse":      {model: "gemini-1.5-pro", stream: true},
+		"/v1beta/models/gemini-1.5-flash-001:generateContent":    {model: "gemini-1.5-flash", stream: false},
+		"/v1beta/models/gemini-1.5-flash-latest:generateContent": {model: "gemini-1.5-flash", stream: false},
+		"/gemini/v1beta/models/gemini-2.5-pro:countTokens":       {model: "gemini-2.5-pro", stream: false},
+	}
+	for path, want := range cases {
+		gm, ok := parseGeminiPath(path)
+		require.True(t, ok, "must parse %q", path)
+		assert.Equal(t, want.model, gm.model, "model for %q", path)
+		assert.Equal(t, want.stream, gm.stream, "stream flag for %q", path)
+	}
+
+	// Negative cases
+	for _, bad := range []string{
+		"/v1/chat/completions",
+		"/v1/projects/p/locations/l/publishers/google/models/gemini-1.5-flash:generateContent", // vertex should be handled by parseVertexPath
+		"/v1beta/models/",
+	} {
+		_, ok := parseGeminiPath(bad)
+		assert.False(t, ok, "should not parse %q as Gemini AI Studio path", bad)
+	}
+}
+
+func TestInvoke_GeminiGoogleAIStudio(t *testing.T) {
+	mw := newMiddleware(t)
+	body := []byte(`{"contents":[{"parts":[{"text":"Hello Gemini"}]}]}`)
+
+	t.Run("unary", func(t *testing.T) {
+		out, err := mw.Invoke(context.Background(), &middleware.Input{
+			URL:  "/v1beta/models/gemini-1.5-flash:generateContent",
+			Body: body,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, middleware.DecisionAllow, out.Decision)
+
+		provider, ok := metaValue(t, out.Metadata, middleware.KeyLLMProvider)
+		require.True(t, ok)
+		assert.Equal(t, "gemini", provider)
+
+		model, ok := metaValue(t, out.Metadata, middleware.KeyLLMModel)
+		require.True(t, ok)
+		assert.Equal(t, "gemini-1.5-flash", model)
+
+		stream, ok := metaValue(t, out.Metadata, middleware.KeyLLMStream)
+		require.True(t, ok)
+		assert.Equal(t, "false", stream)
+
+		prompt, ok := metaValue(t, out.Metadata, middleware.KeyLLMRequestPromptRaw)
+		require.True(t, ok)
+		assert.Equal(t, "Hello Gemini", prompt)
+	})
+
+	t.Run("streaming", func(t *testing.T) {
+		out, err := mw.Invoke(context.Background(), &middleware.Input{
+			URL:  "/v1beta/models/gemini-1.5-pro-001:streamGenerateContent?alt=sse",
+			Body: body,
+		})
+		require.NoError(t, err)
+
+		stream, ok := metaValue(t, out.Metadata, middleware.KeyLLMStream)
+		require.True(t, ok)
+		assert.Equal(t, "true", stream)
+
+		model, ok := metaValue(t, out.Metadata, middleware.KeyLLMModel)
+		require.True(t, ok)
+		assert.Equal(t, "gemini-1.5-pro", model)
+	})
+}
+
+func TestInvoke_GeminiVertexAI(t *testing.T) {
+	mw := newMiddleware(t)
+	body := []byte(`{"contents":[{"parts":[{"text":"Vertex Gemini"}]}]}`)
+
+	out, err := mw.Invoke(context.Background(), &middleware.Input{
+		URL:  "/v1/projects/my-proj/locations/us-central1/publishers/google/models/gemini-1.5-flash@001:streamGenerateContent",
+		Body: body,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, middleware.DecisionAllow, out.Decision)
+
+	provider, ok := metaValue(t, out.Metadata, middleware.KeyLLMProvider)
+	require.True(t, ok)
+	assert.Equal(t, "gemini", provider)
+
+	model, ok := metaValue(t, out.Metadata, middleware.KeyLLMModel)
+	require.True(t, ok)
+	assert.Equal(t, "gemini-1.5-flash", model)
+
+	stream, ok := metaValue(t, out.Metadata, middleware.KeyLLMStream)
+	require.True(t, ok)
+	assert.Equal(t, "true", stream)
+
+	prompt, ok := metaValue(t, out.Metadata, middleware.KeyLLMRequestPromptRaw)
+	require.True(t, ok)
+	assert.Equal(t, "Vertex Gemini", prompt)
+}
+
+func TestParseVertexPath_GooglePublisher(t *testing.T) {
+	cases := map[string]struct {
+		model  string
+		stream bool
+	}{
+		"/v1/projects/p/locations/global/publishers/google/models/gemini-2.5-flash:generateContent":         {model: "gemini-2.5-flash", stream: false},
+		"/v1/projects/p/locations/global/publishers/google/models/gemini-2.5-pro-001:streamGenerateContent": {model: "gemini-2.5-pro", stream: true},
+		"/v1/projects/p/locations/global/publishers/google/models/gemini-1.5-flash@001:rawPredict":          {model: "gemini-1.5-flash", stream: false},
+		"/v1/projects/p/locations/global/publishers/google/models/gemini-1.5-flash/count-tokens:rawPredict": {model: "gemini-1.5-flash", stream: false},
+	}
+	for path, want := range cases {
+		vx, ok := parseVertexPath(path)
+		require.True(t, ok, "must parse %q", path)
+		assert.Equal(t, want.model, vx.model, "model for %q", path)
+		assert.Equal(t, want.stream, vx.stream, "stream flag for %q", path)
+		assert.Equal(t, "google", vx.publisher, "publisher for %q", path)
+	}
+}

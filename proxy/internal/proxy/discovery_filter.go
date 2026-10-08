@@ -26,10 +26,11 @@ const maxDiscoveryBodyBytes = 1 << 20
 // best-effort: a response it cannot safely rewrite passes through
 // untouched rather than reaching the client corrupted.
 func modelDiscoveryFilter(allowed []string, next func(*http.Response) error) func(*http.Response) error {
-	permitted := make(map[string]struct{}, len(allowed)*2)
+	permitted := make(map[string]struct{}, len(allowed)*3)
 	for _, id := range allowed {
 		permitted[id] = struct{}{}
 		permitted[sharedllm.NormalizeAnthropicModel(id)] = struct{}{}
+		permitted[sharedllm.NormalizeGeminiModel(id)] = struct{}{}
 	}
 
 	return func(resp *http.Response) error {
@@ -107,6 +108,7 @@ var listingEnvelopes = []struct {
 }{
 	{"data", "id"},
 	{"inferenceProfileSummaries", "inferenceProfileId"},
+	{"models", "name"},
 }
 
 // filterListingBody returns the listing with unauthorised entries removed.
@@ -181,6 +183,7 @@ var gatewayNamespaces = map[string]struct{}{
 	"anthropic": {},
 	"azure":     {},
 	"bedrock":   {},
+	"gemini":    {},
 	"mistral":   {},
 	"openai":    {},
 	"vertex_ai": {},
@@ -206,10 +209,13 @@ func modelIDForms(id string) []string {
 	if bedrock := sharedllm.NormalizeBedrockModel(id); bedrock != id {
 		forms = append(forms, bedrock)
 	}
+	if gemini := sharedllm.NormalizeGeminiModel(id); gemini != id {
+		forms = append(forms, gemini)
+	}
 	if slash := strings.Index(id, "/"); slash > 0 {
 		if _, ok := gatewayNamespaces[id[:slash]]; ok {
 			tail := id[slash+1:]
-			forms = append(forms, tail, sharedllm.NormalizeAnthropicModel(tail))
+			forms = append(forms, tail, sharedllm.NormalizeAnthropicModel(tail), sharedllm.NormalizeGeminiModel(tail))
 		}
 	}
 	return forms

@@ -27,12 +27,12 @@ func TestOpenAIDetectFromURL(t *testing.T) {
 		// catches Cloudflare's OpenAI direct path
 		// (/v1/{account}/{gateway}/openai/chat/completions) and
 		// compat path (/v1/{account}/{gateway}/compat/chat/completions).
-		"/v1/{account}/{gateway}/openai/chat/completions":  true,
-		"/v1/{account}/{gateway}/compat/chat/completions":  true,
-		"/chat/completions":                                true,
-		"/v1/messages":                                     false,
-		"/healthz":                                         false,
-		"":                                                 false,
+		"/v1/{account}/{gateway}/openai/chat/completions": true,
+		"/v1/{account}/{gateway}/compat/chat/completions": true,
+		"/chat/completions": true,
+		"/v1/messages":      false,
+		"/healthz":          false,
+		"":                  false,
 	}
 	for path, want := range cases {
 		assert.Equal(t, want, p.DetectFromURL(path), "DetectFromURL(%q)", path)

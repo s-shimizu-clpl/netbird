@@ -89,6 +89,11 @@ func (m middlewareImpl) Invoke(_ context.Context, in *middleware.Input) (*middle
 		return m.invokeVertex(in, vx), nil
 	}
 
+	// Google AI Studio (Gemini) carries the model in the URL path (/v1beta/models/{model}:{action}).
+	if gm, okg := parseGeminiPath(in.URL); okg {
+		return m.invokeGemini(in, gm), nil
+	}
+
 	// AWS Bedrock likewise carries the model in the URL path (/model/{id}/{action}).
 	if br, okb := parseBedrockPath(extractPath(in.URL)); okb {
 		return m.invokeBedrock(in, br), nil
@@ -298,7 +303,11 @@ func parseVertexPath(reqPath string) (vertexRequest, bool) {
 	if slash := strings.Index(model, "/"); slash >= 0 {
 		model = model[:slash]
 	}
-	model = llm.NormalizeVertexModel(model)
+	if strings.EqualFold(publisher, "google") {
+		model = llm.NormalizeGeminiModel(model)
+	} else {
+		model = llm.NormalizeVertexModel(model)
+	}
 	if model == "" {
 		return vertexRequest{}, false
 	}
@@ -307,13 +316,15 @@ func parseVertexPath(reqPath string) (vertexRequest, bool) {
 
 // vertexPublisherVendor maps a Vertex publisher to the parser surface its
 // requests/responses speak. Empty for publishers without a parser yet
-// (e.g. google/gemini) — the request still routes, but isn't metered.
+// (the request still routes, but isn't metered).
 func vertexPublisherVendor(publisher string) string {
 	switch strings.ToLower(publisher) {
 	case "anthropic":
 		return "anthropic"
 	case "openai":
 		return "openai"
+	case "google":
+		return llm.ProviderNameGemini
 	default:
 		return ""
 	}
@@ -337,6 +348,99 @@ func (m middlewareImpl) invokeVertex(in *middleware.Input, vx vertexRequest) *mi
 		parser, _ = llm.ParserByName(vendor)
 	}
 
+	sessionID := sessionIDFromHeaders(in.Headers)
+	if sessionID == "" && parser != nil {
+		sessionID = parser.ExtractSessionID(in.Body)
+	}
+	if sessionID != "" {
+		md = append(md, middleware.KV{Key: middleware.KeyLLMSessionID, Value: sessionID})
+	}
+	md = appendAgentIDs(md, in.Headers)
+
+	promptTruncated := false
+	if parser != nil && m.capturePrompt {
+		var prompt string
+		prompt, promptTruncated = truncatePrompt(parser.ExtractPrompt(in.Body))
+		if prompt != "" {
+			if m.redactPii {
+				prompt = llm_guardrail.RedactPII(prompt)
+				var rt bool
+				prompt, rt = truncatePrompt(prompt)
+				promptTruncated = promptTruncated || rt
+			}
+			md = append(md, middleware.KV{Key: middleware.KeyLLMRequestPromptRaw, Value: prompt})
+		}
+	}
+	md = appendCaptureTruncated(md, promptTruncated, in.BodyTruncated)
+	out.Metadata = md
+	return out
+}
+
+// geminiRequest is the model + streaming flag extracted from a Google AI Studio
+// (Gemini Developer API) model endpoint.
+type geminiRequest struct {
+	model  string
+	stream bool
+}
+
+// parseGeminiPath extracts the model and streaming flag from a Google AI Studio
+// (Gemini Developer API) endpoint:
+//
+//	/v1beta/models/{model}:{action}
+//	/v1/models/{model}:{action}
+//
+// Query parameters like ?alt=sse or an action starting with "stream" mark streaming.
+func parseGeminiPath(reqURL string) (geminiRequest, bool) {
+	u, err := url.Parse(reqURL)
+	var path, query string
+	if err != nil || u.Path == "" {
+		path = reqURL
+	} else {
+		path = u.Path
+		query = u.RawQuery
+	}
+
+	const modSep = "/models/"
+	modIdx := strings.Index(path, modSep)
+	if modIdx < 0 {
+		return geminiRequest{}, false
+	}
+	// Vertex AI publisher endpoints are handled by parseVertexPath.
+	if strings.Contains(path, "/publishers/") {
+		return geminiRequest{}, false
+	}
+
+	rest := path[modIdx+len(modSep):] // {model}:{action}
+	if rest == "" {
+		return geminiRequest{}, false
+	}
+	model, action := rest, ""
+	if c := strings.LastIndex(rest, ":"); c >= 0 {
+		model, action = rest[:c], rest[c+1:]
+	}
+	if slash := strings.Index(model, "/"); slash >= 0 {
+		model = model[:slash]
+	}
+	model = llm.NormalizeGeminiModel(model)
+	if model == "" {
+		return geminiRequest{}, false
+	}
+
+	isStream := strings.HasPrefix(action, "stream") || strings.Contains(query, "alt=sse")
+	return geminiRequest{model: model, stream: isStream}, true
+}
+
+// invokeGemini emits the model/provider/session/prompt for a Google AI Studio
+// (Gemini Developer API) request.
+func (m middlewareImpl) invokeGemini(in *middleware.Input, gm geminiRequest) *middleware.Output {
+	out := &middleware.Output{Decision: middleware.DecisionAllow}
+	md := []middleware.KV{
+		{Key: middleware.KeyLLMProvider, Value: llm.ProviderNameGemini},
+		{Key: middleware.KeyLLMModel, Value: gm.model},
+		{Key: middleware.KeyLLMStream, Value: strconv.FormatBool(gm.stream)},
+	}
+
+	parser, _ := llm.ParserByName(llm.ProviderNameGemini)
 	sessionID := sessionIDFromHeaders(in.Headers)
 	if sessionID == "" && parser != nil {
 		sessionID = parser.ExtractSessionID(in.Body)

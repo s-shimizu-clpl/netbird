@@ -16,7 +16,12 @@ const (
 	ProviderAnthropic Provider = 2
 	// ProviderBedrock identifies the AWS Bedrock runtime surface.
 	ProviderBedrock Provider = 3
+	// ProviderGemini identifies the Google Gemini API surface.
+	ProviderGemini Provider = 4
 )
+
+// ProviderNameGemini is the stable label for the Google Gemini parser.
+const ProviderNameGemini = "gemini"
 
 // RequestFacts captures the subset of the LLM request body that the
 // middleware annotates as metadata (model, streaming flag). Additional
@@ -80,6 +85,7 @@ func Parsers() []Parser {
 		OpenAIParser{},
 		AnthropicParser{},
 		BedrockParser{},
+		GeminiParser{},
 	}
 }
 

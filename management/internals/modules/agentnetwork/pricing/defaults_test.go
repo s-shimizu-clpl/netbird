@@ -26,6 +26,9 @@ func TestDefaultTable_CoversEveryCatalogModel(t *testing.T) {
 			byModel, ok := table[surface]
 			require.True(t, ok, "surface %q (provider %s) missing from default table", surface, p.ID)
 			for _, m := range p.Models {
+				if m.PricingSurface != "" && m.PricingSurface != surface {
+					continue
+				}
 				e, ok := byModel[m.ID]
 				require.True(t, ok, "%s/%s (provider %s) missing from default table", surface, m.ID, p.ID)
 				assert.Equal(t, m.InputPer1k, e.InputPer1k, "%s/%s input rate", surface, m.ID)
@@ -54,6 +57,9 @@ func TestDefaultTable_NoConflictingContributions(t *testing.T) {
 				seen[surface] = map[string]contribution{}
 			}
 			for _, m := range p.Models {
+				if m.PricingSurface != "" && m.PricingSurface != surface {
+					continue
+				}
 				e := entryFromCatalogModel(m)
 				if prev, dup := seen[surface][m.ID]; dup {
 					assert.Equal(t, prev.entry, e,
@@ -116,6 +122,12 @@ func TestDefaultTable_PinnedRates(t *testing.T) {
 	assert.InDelta(t, 0.010, fable.InputPer1k, 1e-9, "claude-fable-5 input")
 	assert.InDelta(t, 0.0125, fable.CacheCreationPer1k, 1e-9, "claude-fable-5 cache creation")
 
+	// Gemini prices under "gemini" surface.
+	gemini25Pro := table["gemini"]["gemini-2.5-pro"]
+	assert.InDelta(t, 0.00125, gemini25Pro.InputPer1k, 1e-9, "gemini-2.5-pro input")
+	assert.InDelta(t, 0.005, gemini25Pro.OutputPer1k, 1e-9, "gemini-2.5-pro output")
+	assert.InDelta(t, 0.0003125, gemini25Pro.CachedInputPer1k, 1e-9, "gemini-2.5-pro cached input")
+
 	// Every id below must stay priced whichever source provides it: the
 	// catalog lineup for the current Claude 5 family, supplementalDefaults
 	// for the ids the dashboard deliberately doesn't offer.
@@ -123,6 +135,7 @@ func TestDefaultTable_PinnedRates(t *testing.T) {
 		"openai":    {"gpt-5", "gpt-5-mini", "gpt-5-nano"},
 		"anthropic": {"claude-opus-5", "claude-sonnet-5", "kimi-k3[1m]", "kimi-k3"},
 		"bedrock":   {"anthropic.claude-opus-5", "anthropic.claude-sonnet-5"},
+		"gemini":    {"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"},
 	} {
 		for _, id := range ids {
 			_, ok := table[surface][id]

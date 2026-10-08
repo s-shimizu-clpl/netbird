@@ -137,3 +137,47 @@ func TestBuildCostMeterConfig_BedrockGeographyOutsideTheOriginalFour(t *testing.
 		})
 	}
 }
+
+func TestBuildCostMeterConfig_GeminiModelNormalization(t *testing.T) {
+	gemini := &types.Provider{
+		ID:         "prov-gemini",
+		ProviderID: "gemini_api",
+		Enabled:    true,
+		Models: []types.ProviderModel{
+			{ID: "models/gemini-2.5-pro-001", InputPer1k: 0.00125, OutputPer1k: 0.005},
+		},
+	}
+	raw, err := buildCostMeterConfigJSON([]*types.Provider{gemini}, map[string][]string{"prov-gemini": {"grp"}})
+	require.NoError(t, err)
+	cfg := decodeCostMeterConfig(t, raw)
+
+	models := cfg.Pricing.Providers["prov-gemini"]
+	require.Len(t, models, 1)
+	e, ok := models["gemini-2.5-pro"]
+	require.True(t, ok, "key must be the normalized gemini id")
+	assert.InDelta(t, 0.00125, e.InputPer1k, 1e-9)
+	assert.InDelta(t, 0.005, e.OutputPer1k, 1e-9)
+	assert.InDelta(t, 0.0003125, e.CachedInputPer1k, 1e-9, "cached input rate inherited from gemini default entry")
+}
+
+func TestBuildCostMeterConfig_VertexGeminiModelNormalization(t *testing.T) {
+	vertex := &types.Provider{
+		ID:         "prov-vertex",
+		ProviderID: "vertex_ai_api",
+		Enabled:    true,
+		Models: []types.ProviderModel{
+			{ID: "publishers/google/models/gemini-2.5-flash@001", InputPer1k: 0.000075, OutputPer1k: 0.0003},
+		},
+	}
+	raw, err := buildCostMeterConfigJSON([]*types.Provider{vertex}, map[string][]string{"prov-vertex": {"grp"}})
+	require.NoError(t, err)
+	cfg := decodeCostMeterConfig(t, raw)
+
+	models := cfg.Pricing.Providers["prov-vertex"]
+	require.Len(t, models, 1)
+	e, ok := models["gemini-2.5-flash"]
+	require.True(t, ok, "key must be the normalized gemini id")
+	assert.InDelta(t, 0.000075, e.InputPer1k, 1e-9)
+	assert.InDelta(t, 0.0003, e.OutputPer1k, 1e-9)
+	assert.InDelta(t, 0.00001875, e.CachedInputPer1k, 1e-9, "cached input rate inherited from gemini default entry")
+}

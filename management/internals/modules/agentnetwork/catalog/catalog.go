@@ -23,6 +23,7 @@ import "github.com/netbirdio/netbird/shared/management/http/api"
 type Model struct {
 	ID                 string
 	Label              string
+	PricingSurface     string
 	InputPer1k         float64
 	OutputPer1k        float64
 	CachedInputPer1k   float64
@@ -142,6 +143,9 @@ const (
 	// name is a resource path and the invocable id is its last segment joined
 	// to a separate versionId field.
 	ShapeVertexPublisherModels ListingShape = "vertex_publisher_models"
+	// ShapeGeminiModels is {"models":[{"name":…,"displayName":…}]}, which Google
+	// AI Studio returns for GET /v1beta/models.
+	ShapeGeminiModels ListingShape = "gemini_models"
 )
 
 // Discovery describes one vendor's model-listing endpoint.
@@ -157,10 +161,10 @@ const (
 // one from the caller is also what keeps this from being an open proxy: the
 // only hosts management will dial are the ones written here.
 type Discovery struct {
-	Host            string
-	Path            string
-	Query           string
-	Shape           ListingShape
+	Host  string
+	Path  string
+	Query string
+	Shape ListingShape
 	// ExactModelsOnly omits wildcard patterns from listings when NetBird's
 	// provider model rows cannot represent the vendor's matching semantics.
 	ExactModelsOnly bool
@@ -494,30 +498,56 @@ var providers = []Provider{
 			Shape: ShapeVertexPublisherModels,
 		},
 		// ParserID stays empty (path-style dispatch via IsVertexPathStyle);
-		// Anthropic-on-Vertex requests are metered under the "anthropic"
-		// surface with the bare, unversioned model id.
-		PricingSurfaces: []string{"anthropic"},
+		// requests are metered under "anthropic" or "gemini" surfaces based on
+		// publisher with the bare, unversioned model id.
+		PricingSurfaces: []string{"anthropic", "gemini"},
 		// Vertex carries the model in the URL path and authenticates with a
 		// service-account-minted OAuth token (api_key = "keyfile::<base64 SA>").
-		// Only Anthropic-on-Vertex is metered today: the request parser maps the
-		// anthropic publisher to the Anthropic parser, so the lineup + prices
-		// mirror the first-party Anthropic catalog (LiteLLM vertex_ai/claude-*
-		// confirms the same per-token rates; cross-region profiles in eu/apac
-		// carry a ~10% premium that base pricing does not model). Gemini (the
-		// google publisher) is intentionally omitted until a Gemini parser
-		// exists — the router denies unmeterable publishers rather than forward
-		// them uncounted.
+		// Both Anthropic and Gemini (Google) on Vertex are metered: the request
+		// parser maps the anthropic publisher to the Anthropic parser (priced
+		// under "anthropic"), and the google publisher to the Gemini parser
+		// (priced under "gemini"). The lineup + prices mirror the respective
+		// first-party catalogs.
 		Models: []Model{
-			{ID: "claude-opus-5", Label: "Claude Opus 5 (Vertex)", InputPer1k: 0.005, OutputPer1k: 0.025, CacheReadPer1k: 0.0005, CacheCreationPer1k: 0.00625, ContextWindow: 1000000},
-			{ID: "claude-sonnet-5", Label: "Claude Sonnet 5 (Vertex)", InputPer1k: 0.003, OutputPer1k: 0.015, CacheReadPer1k: 0.0003, CacheCreationPer1k: 0.00375, ContextWindow: 1000000},
-			{ID: "claude-fable-5", Label: "Claude Fable 5 (Vertex)", InputPer1k: 0.010, OutputPer1k: 0.050, CacheReadPer1k: 0.001, CacheCreationPer1k: 0.0125, ContextWindow: 1000000},
-			{ID: "claude-opus-4-8", Label: "Claude Opus 4.8 (Vertex)", InputPer1k: 0.005, OutputPer1k: 0.025, CacheReadPer1k: 0.0005, CacheCreationPer1k: 0.00625, ContextWindow: 1000000},
-			{ID: "claude-opus-4-7", Label: "Claude Opus 4.7 (Vertex)", InputPer1k: 0.005, OutputPer1k: 0.025, CacheReadPer1k: 0.0005, CacheCreationPer1k: 0.00625, ContextWindow: 1000000},
-			{ID: "claude-opus-4-6", Label: "Claude Opus 4.6 (Vertex)", InputPer1k: 0.005, OutputPer1k: 0.025, CacheReadPer1k: 0.0005, CacheCreationPer1k: 0.00625, ContextWindow: 1000000},
-			{ID: "claude-opus-4-1", Label: "Claude Opus 4.1 (Vertex, deprecated 2026-08-05)", InputPer1k: 0.015, OutputPer1k: 0.075, CacheReadPer1k: 0.0015, CacheCreationPer1k: 0.01875, ContextWindow: 200000},
-			{ID: "claude-sonnet-4-6", Label: "Claude Sonnet 4.6 (Vertex)", InputPer1k: 0.003, OutputPer1k: 0.015, CacheReadPer1k: 0.0003, CacheCreationPer1k: 0.00375, ContextWindow: 1000000},
-			{ID: "claude-sonnet-4-5", Label: "Claude Sonnet 4.5 (Vertex)", InputPer1k: 0.003, OutputPer1k: 0.015, CacheReadPer1k: 0.0003, CacheCreationPer1k: 0.00375, ContextWindow: 200000},
-			{ID: "claude-haiku-4-5", Label: "Claude Haiku 4.5 (Vertex)", InputPer1k: 0.001, OutputPer1k: 0.005, CacheReadPer1k: 0.0001, CacheCreationPer1k: 0.00125, ContextWindow: 200000},
+			{ID: "claude-opus-5", Label: "Claude Opus 5 (Vertex)", PricingSurface: "anthropic", InputPer1k: 0.005, OutputPer1k: 0.025, CacheReadPer1k: 0.0005, CacheCreationPer1k: 0.00625, ContextWindow: 1000000},
+			{ID: "claude-sonnet-5", Label: "Claude Sonnet 5 (Vertex)", PricingSurface: "anthropic", InputPer1k: 0.003, OutputPer1k: 0.015, CacheReadPer1k: 0.0003, CacheCreationPer1k: 0.00375, ContextWindow: 1000000},
+			{ID: "claude-fable-5", Label: "Claude Fable 5 (Vertex)", PricingSurface: "anthropic", InputPer1k: 0.010, OutputPer1k: 0.050, CacheReadPer1k: 0.001, CacheCreationPer1k: 0.0125, ContextWindow: 1000000},
+			{ID: "claude-opus-4-8", Label: "Claude Opus 4.8 (Vertex)", PricingSurface: "anthropic", InputPer1k: 0.005, OutputPer1k: 0.025, CacheReadPer1k: 0.0005, CacheCreationPer1k: 0.00625, ContextWindow: 1000000},
+			{ID: "claude-opus-4-7", Label: "Claude Opus 4.7 (Vertex)", PricingSurface: "anthropic", InputPer1k: 0.005, OutputPer1k: 0.025, CacheReadPer1k: 0.0005, CacheCreationPer1k: 0.00625, ContextWindow: 1000000},
+			{ID: "claude-opus-4-6", Label: "Claude Opus 4.6 (Vertex)", PricingSurface: "anthropic", InputPer1k: 0.005, OutputPer1k: 0.025, CacheReadPer1k: 0.0005, CacheCreationPer1k: 0.00625, ContextWindow: 1000000},
+			{ID: "claude-opus-4-1", Label: "Claude Opus 4.1 (Vertex, deprecated 2026-08-05)", PricingSurface: "anthropic", InputPer1k: 0.015, OutputPer1k: 0.075, CacheReadPer1k: 0.0015, CacheCreationPer1k: 0.01875, ContextWindow: 200000},
+			{ID: "claude-sonnet-4-6", Label: "Claude Sonnet 4.6 (Vertex)", PricingSurface: "anthropic", InputPer1k: 0.003, OutputPer1k: 0.015, CacheReadPer1k: 0.0003, CacheCreationPer1k: 0.00375, ContextWindow: 1000000},
+			{ID: "claude-sonnet-4-5", Label: "Claude Sonnet 4.5 (Vertex)", PricingSurface: "anthropic", InputPer1k: 0.003, OutputPer1k: 0.015, CacheReadPer1k: 0.0003, CacheCreationPer1k: 0.00375, ContextWindow: 200000},
+			{ID: "claude-haiku-4-5", Label: "Claude Haiku 4.5 (Vertex)", PricingSurface: "anthropic", InputPer1k: 0.001, OutputPer1k: 0.005, CacheReadPer1k: 0.0001, CacheCreationPer1k: 0.00125, ContextWindow: 200000},
+			{ID: "gemini-2.5-pro", Label: "Gemini 2.5 Pro (Vertex)", PricingSurface: "gemini", InputPer1k: 0.00125, OutputPer1k: 0.005, CachedInputPer1k: 0.0003125, ContextWindow: 2000000},
+			{ID: "gemini-2.5-flash", Label: "Gemini 2.5 Flash (Vertex)", PricingSurface: "gemini", InputPer1k: 0.000075, OutputPer1k: 0.0003, CachedInputPer1k: 0.00001875, ContextWindow: 1000000},
+			{ID: "gemini-2.0-flash", Label: "Gemini 2.0 Flash (Vertex)", PricingSurface: "gemini", InputPer1k: 0.0001, OutputPer1k: 0.0004, CachedInputPer1k: 0.000025, ContextWindow: 1048576},
+			{ID: "gemini-1.5-pro", Label: "Gemini 1.5 Pro (Vertex)", PricingSurface: "gemini", InputPer1k: 0.00125, OutputPer1k: 0.005, CachedInputPer1k: 0.0003125, ContextWindow: 2097152},
+			{ID: "gemini-1.5-flash", Label: "Gemini 1.5 Flash (Vertex)", PricingSurface: "gemini", InputPer1k: 0.000075, OutputPer1k: 0.0003, CachedInputPer1k: 0.00001875, ContextWindow: 1048576},
+		},
+	},
+	{
+		ID:                 "gemini_api",
+		Kind:               KindProvider,
+		Name:               "Google Gemini API",
+		Description:        "Gemini models via Google AI Studio",
+		DefaultHost:        "generativelanguage.googleapis.com",
+		AuthHeaderName:     "x-goog-api-key",
+		AuthHeaderTemplate: "${API_KEY}",
+		DefaultContentType: "application/json",
+		BrandColor:         "#4285F4",
+		Discovery: &Discovery{
+			Path:  "/v1beta/models",
+			Shape: ShapeGeminiModels,
+		},
+		ParserID:        "gemini",
+		PricingSurfaces: []string{"gemini"},
+		Models: []Model{
+			{ID: "gemini-2.5-pro", Label: "Gemini 2.5 Pro", InputPer1k: 0.00125, OutputPer1k: 0.005, CachedInputPer1k: 0.0003125, ContextWindow: 2000000},
+			{ID: "gemini-2.5-flash", Label: "Gemini 2.5 Flash", InputPer1k: 0.000075, OutputPer1k: 0.0003, CachedInputPer1k: 0.00001875, ContextWindow: 1000000},
+			{ID: "gemini-2.0-flash", Label: "Gemini 2.0 Flash", InputPer1k: 0.0001, OutputPer1k: 0.0004, CachedInputPer1k: 0.000025, ContextWindow: 1048576},
+			{ID: "gemini-1.5-pro", Label: "Gemini 1.5 Pro", InputPer1k: 0.00125, OutputPer1k: 0.005, CachedInputPer1k: 0.0003125, ContextWindow: 2097152},
+			{ID: "gemini-1.5-flash", Label: "Gemini 1.5 Flash", InputPer1k: 0.000075, OutputPer1k: 0.0003, CachedInputPer1k: 0.00001875, ContextWindow: 1048576},
 		},
 	},
 	{
@@ -933,6 +963,13 @@ func IsVertexPathStyle(providerID string) bool {
 // converse-stream) rather than the body, so the proxy routes it by path.
 func IsBedrockPathStyle(providerID string) bool {
 	return providerID == "bedrock_api"
+}
+
+// IsGeminiPathStyle reports whether a provider uses the Google Gemini API
+// request shape — the model is carried in the URL path
+// (/v1beta/models/{model}:{action} or /v1/models/{model}:{action}).
+func IsGeminiPathStyle(providerID string) bool {
+	return providerID == "gemini_api"
 }
 
 // ToAPIResponse renders a catalog provider as the API representation.

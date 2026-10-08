@@ -167,3 +167,50 @@ data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}
 	assert.Equal(t, int64(0), usage.OutputTokens, "output_tokens stays zero without message_delta")
 	assert.Equal(t, "hi", completion, "completion must come from observed text_delta events")
 }
+
+func TestInvoke_GeminiStreamingWithUsage(t *testing.T) {
+	m := newTestMiddleware(t)
+	body := []byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello\"}]}}]}\n\n" +
+		"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\", world!\"}]}}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":5,\"totalTokenCount\":15,\"cachedContentTokenCount\":2}}\n\n")
+
+	in := &middleware.Input{
+		Slot:        middleware.SlotOnResponse,
+		Status:      200,
+		RespHeaders: []middleware.KV{{Key: "Content-Type", Value: "text/event-stream"}},
+		RespBody:    body,
+		Metadata: []middleware.KV{
+			{Key: middleware.KeyLLMProvider, Value: "gemini"},
+			{Key: middleware.KeyLLMModel, Value: "gemini-1.5-flash"},
+		},
+	}
+
+	out, err := m.Invoke(context.Background(), in)
+	require.NoError(t, err, "Invoke must not error on streaming Gemini body")
+
+	inTok, _ := metaValue(out.Metadata, middleware.KeyLLMInputTokens)
+	assert.Equal(t, "10", inTok)
+
+	outTok, _ := metaValue(out.Metadata, middleware.KeyLLMOutputTokens)
+	assert.Equal(t, "5", outTok)
+
+	totTok, _ := metaValue(out.Metadata, middleware.KeyLLMTotalTokens)
+	assert.Equal(t, "15", totTok)
+
+	cachedTok, _ := metaValue(out.Metadata, middleware.KeyLLMCachedInputTokens)
+	assert.Equal(t, "2", cachedTok)
+
+	completion, ok := metaValue(out.Metadata, middleware.KeyLLMResponseCompletion)
+	require.True(t, ok)
+	assert.Equal(t, "Hello, world!", completion)
+}
+
+func TestInvoke_GeminiStreamingWithoutUsage(t *testing.T) {
+	body := []byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hi\"}]}}]}\n\n" +
+		"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" there\"}]}}]}\n\n")
+
+	usage, completion := accumulateGeminiStream(body)
+	assert.Equal(t, int64(0), usage.InputTokens)
+	assert.Equal(t, int64(0), usage.OutputTokens)
+	assert.Equal(t, int64(0), usage.TotalTokens)
+	assert.Equal(t, "Hi there", completion)
+}

@@ -121,7 +121,10 @@ func TestEntryCosts_SurfaceSelectsFormula(t *testing.T) {
 	bedrock := EntryCosts(e, "bedrock", 1000, 0, 400, 300)
 	assert.InDelta(t, anthropic.TotalUSD, bedrock.TotalUSD, 1e-12, "bedrock shares the anthropic formula")
 
-	other := EntryCosts(e, "gemini", 1000, 0, 400, 300)
+	gemini := EntryCosts(e, "gemini", 1000, 0, 400, 300)
+	assert.InDelta(t, openai.TotalUSD, gemini.TotalUSD, 1e-12, "gemini shares the openai subset formula")
+
+	other := EntryCosts(e, "other", 1000, 0, 400, 300)
 	assert.InDelta(t, 0.002, other.TotalUSD, 1e-12, "unknown surface: cache counts ignored")
 }
 
@@ -193,4 +196,31 @@ func TestLookup_DatedAnthropicIDFallsBackToUndated(t *testing.T) {
 
 	_, ok = table.Lookup("anthropic", "claude-sonnet-9-9-20250929")
 	assert.False(t, ok, "an unknown family must stay unpriced")
+}
+
+// TestLookup_GeminiModelNormalization covers normalizing prefixes and version/date suffixes for Gemini.
+func TestLookup_GeminiModelNormalization(t *testing.T) {
+	table, err := NewTable(map[string]map[string]EntryJSON{
+		"gemini": {
+			"gemini-1.5-flash": {InputPer1K: 0.000075, OutputPer1K: 0.0003, CachedInputPer1K: 0.00001875},
+		},
+	})
+	require.NoError(t, err)
+
+	cases := []struct {
+		model string
+	}{
+		{"gemini-1.5-flash"},
+		{"models/gemini-1.5-flash"},
+		{"gemini-1.5-flash-001"},
+		{"gemini-1.5-flash-002"},
+		{"gemini-1.5-flash-latest"},
+		{"gemini-1.5-flash@001"},
+	}
+
+	for _, tc := range cases {
+		entry, ok := table.Lookup("gemini", tc.model)
+		assert.True(t, ok, "model %q should resolve to normalized entry", tc.model)
+		assert.InDelta(t, 0.000075, entry.InputPer1K, 1e-9)
+	}
 }

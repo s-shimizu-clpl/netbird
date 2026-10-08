@@ -1964,4 +1964,3 @@ func TestRouter_Serve_BacksOffOnTransientError(t *testing.T) {
 type errSentinel string
 
 func (e errSentinel) Error() string { return string(e) }
-

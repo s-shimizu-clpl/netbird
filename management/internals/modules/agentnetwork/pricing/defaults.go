@@ -99,6 +99,9 @@ func buildDefaultTable() map[string]map[string]Entry {
 				out[surface] = inner
 			}
 			for _, m := range p.Models {
+				if m.PricingSurface != "" && m.PricingSurface != surface {
+					continue
+				}
 				// First writer wins; providers contributing the same
 				// (surface, model) must agree on rates — enforced by
 				// TestDefaultTable_NoConflictingContributions.

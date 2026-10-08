@@ -159,6 +159,28 @@ bedrock:
     input_per_1k: 0.00072
     output_per_1k: 0.00072
 
+gemini:
+  gemini-1.5-flash:
+    input_per_1k: 0.000075
+    output_per_1k: 0.0003
+    cached_input_per_1k: 0.00001875
+  gemini-1.5-pro:
+    input_per_1k: 0.00125
+    output_per_1k: 0.005
+    cached_input_per_1k: 0.0003125
+  gemini-2.0-flash:
+    input_per_1k: 0.0001
+    output_per_1k: 0.0004
+    cached_input_per_1k: 0.000025
+  gemini-2.5-flash:
+    input_per_1k: 0.000075
+    output_per_1k: 0.0003
+    cached_input_per_1k: 0.00001875
+  gemini-2.5-pro:
+    input_per_1k: 0.00125
+    output_per_1k: 0.005
+    cached_input_per_1k: 0.0003125
+
 openai:
   codestral-2508:
     input_per_1k: 0.0003

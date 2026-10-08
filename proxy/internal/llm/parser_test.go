@@ -9,7 +9,7 @@ import (
 
 func TestParsers_ProviderNames(t *testing.T) {
 	parsers := Parsers()
-	require.Len(t, parsers, 3, "three built-in parsers expected")
+	require.Len(t, parsers, 4, "four built-in parsers expected")
 
 	names := make([]string, 0, len(parsers))
 	for _, p := range parsers {
@@ -18,6 +18,7 @@ func TestParsers_ProviderNames(t *testing.T) {
 	assert.Contains(t, names, "openai", "OpenAI parser should be registered")
 	assert.Contains(t, names, "anthropic", "Anthropic parser should be registered")
 	assert.Contains(t, names, "bedrock", "Bedrock parser should be registered")
+	assert.Contains(t, names, "gemini", "Gemini parser should be registered")
 }
 
 func TestDetectParser(t *testing.T) {
@@ -32,6 +33,8 @@ func TestDetectParser(t *testing.T) {
 		{"openai responses", "/v1/responses", "openai", true},
 		{"anthropic messages", "/v1/messages", "anthropic", true},
 		{"anthropic prefixed", "/proxy/v1/messages?query", "anthropic", true},
+		{"gemini google ai studio", "/v1beta/models/gemini-1.5-flash:generateContent", "gemini", true},
+		{"gemini vertex", "/v1/projects/my-project/locations/us-central1/publishers/google/models/gemini-1.5-pro:streamGenerateContent", "gemini", true},
 		{"unknown path", "/healthz", "", false},
 		{"empty path", "", "", false},
 	}
@@ -51,4 +54,5 @@ func TestProviderValues(t *testing.T) {
 	assert.Equal(t, Provider(0), ProviderUnknown, "unknown provider is the zero value")
 	assert.Equal(t, ProviderOpenAI, OpenAIParser{}.Provider(), "OpenAI parser reports its provider enum")
 	assert.Equal(t, ProviderAnthropic, AnthropicParser{}.Provider(), "Anthropic parser reports its provider enum")
+	assert.Equal(t, ProviderGemini, GeminiParser{}.Provider(), "Gemini parser reports its provider enum")
 }

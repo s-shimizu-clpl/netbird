@@ -87,6 +87,12 @@ const vertexListing = `{"publisherModels":[
   {"name":"publishers/anthropic/models/claude-sonnet-4-5","versionId":"20250929","launchStage":"GA"}
 ]}`
 
+const geminiListing = `{"models":[
+  {"name":"models/gemini-2.5-flash","displayName":"Gemini 2.5 Flash","supportedGenerationMethods":["generateContent"]},
+  {"name":"models/gemini-2.5-pro","displayName":"Gemini 2.5 Pro","supportedGenerationMethods":["generateContent"]},
+  {"name":"models/unknown-preview-model","displayName":"Unknown Preview","supportedGenerationMethods":["generateContent"]}
+]}`
+
 func TestFetchOpenAIListing(t *testing.T) {
 	cl, tr := newStubClient(http.StatusOK, openAIListing)
 
@@ -185,6 +191,30 @@ func TestFetchBedrockUsesTheControlPlaneAndKeepsWireIDs(t *testing.T) {
 	// vendor says the credential can reach it.
 	assert.Zero(t, models[1].InputPer1k)
 	assert.Zero(t, models[1].OutputPer1k)
+}
+
+func TestFetchGeminiListing(t *testing.T) {
+	cl, tr := newStubClient(http.StatusOK, geminiListing)
+
+	models, err := cl.Fetch(context.Background(), Request{
+		CatalogID:   "gemini_api",
+		UpstreamURL: "https://generativelanguage.googleapis.com",
+		APIKey:      "ai-test-key",
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "https://generativelanguage.googleapis.com/v1beta/models", tr.got.URL.String())
+	assert.Equal(t, "ai-test-key", tr.got.Header.Get("x-goog-api-key"),
+		"Gemini API takes API key under x-goog-api-key header")
+	assert.Equal(t, []string{"gemini-2.5-flash", "gemini-2.5-pro", "unknown-preview-model"}, ids(models))
+	assert.Equal(t, "Gemini 2.5 Flash", models[0].Label)
+	assert.True(t, models[0].PricingKnown, "gemini-2.5-flash is in the catalog")
+	assert.True(t, models[1].PricingKnown, "gemini-2.5-pro is in the catalog")
+	assert.False(t, models[2].PricingKnown, "unknown-preview-model is not in the catalog")
+	assert.Positive(t, models[0].InputPer1k)
+	assert.Positive(t, models[0].OutputPer1k)
+	assert.Zero(t, models[2].InputPer1k)
+	assert.Zero(t, models[2].OutputPer1k)
 }
 
 // TestDiscoveredRatesMatchTheCatalogEndpoint pins the two prefill paths to one

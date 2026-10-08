@@ -84,3 +84,44 @@ func TestAgentgatewayCatalogAPIResponse(t *testing.T) {
 	assert.Equal(t, "x-netbird-user-id", resp.IdentityInjection.HeaderPair.EndUserIdHeader)
 	assert.Equal(t, "x-netbird-groups", resp.IdentityInjection.HeaderPair.TagsHeader)
 }
+
+func TestGeminiLineupSelectable(t *testing.T) {
+	for providerID, wanted := range map[string][]string{
+		"gemini_api":    {"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"},
+		"vertex_ai_api": {"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"},
+	} {
+		provider, ok := Lookup(providerID)
+		require.True(t, ok, "catalog must define %s", providerID)
+
+		selectable := make(map[string]Model, len(provider.Models))
+		for _, m := range provider.Models {
+			selectable[m.ID] = m
+		}
+		for _, id := range wanted {
+			model, found := selectable[id]
+			require.True(t, found, "%s must offer %s", providerID, id)
+			assert.NotEmpty(t, model.Label, "%s/%s needs a label for the picker", providerID, id)
+			assert.Positive(t, model.InputPer1k, "%s/%s needs an input rate", providerID, id)
+			assert.Positive(t, model.OutputPer1k, "%s/%s needs an output rate", providerID, id)
+			assert.Positive(t, model.ContextWindow, "%s/%s needs a context window", providerID, id)
+		}
+	}
+}
+
+func TestGeminiCatalogEntry(t *testing.T) {
+	entry, ok := Lookup("gemini_api")
+	require.True(t, ok, "gemini_api must be available in the provider catalog")
+
+	assert.Equal(t, KindProvider, entry.Kind)
+	assert.Equal(t, "generativelanguage.googleapis.com", entry.DefaultHost)
+	assert.Equal(t, "x-goog-api-key", entry.AuthHeaderName)
+	assert.Equal(t, "${API_KEY}", entry.AuthHeaderTemplate)
+	assert.Equal(t, "application/json", entry.DefaultContentType)
+	assert.Equal(t, "gemini", entry.ParserID)
+	assert.Equal(t, []string{"gemini"}, entry.PricingSurfaces)
+	require.NotNil(t, entry.Discovery)
+	assert.Equal(t, "/v1beta/models", entry.Discovery.Path)
+	assert.Equal(t, ShapeGeminiModels, entry.Discovery.Shape)
+	assert.True(t, IsGeminiPathStyle("gemini_api"))
+	assert.False(t, IsGeminiPathStyle("openai_api"))
+}

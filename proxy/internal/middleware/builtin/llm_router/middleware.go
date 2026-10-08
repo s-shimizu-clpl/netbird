@@ -65,6 +65,7 @@ var strippedAuthHeaders = []string{
 	"Proxy-Authorization", // upstream proxy auth (defense-in-depth)
 	"x-api-key",           // Anthropic
 	"api-key",             // Azure OpenAI
+	"x-goog-api-key",      // Gemini / Google AI Studio
 	"X-Amz-Date",          // AWS SigV4 — strip client-supplied AWS signing material
 	"X-Amz-Security-Token",
 	"X-Amz-Content-Sha256",
@@ -336,6 +337,11 @@ func discoverableModels(route ProviderRoute, userGroups []string) ([]string, boo
 				intersection[m] = struct{}{}
 			}
 		}
+		if routeSupportsVendor(route, "gemini") {
+			if _, ok := permitted[llm.NormalizeGeminiModel(m)]; ok {
+				intersection[m] = struct{}{}
+			}
+		}
 	}
 	return sortedModels(intersection), true
 }
@@ -497,12 +503,16 @@ const connectionWarmPath = "/api/hello"
 // alone.
 const modelListingPath = "/v1/models"
 
+// geminiModelListingPath is the endpoint Google AI Studio clients read to
+// enumerate models.
+const geminiModelListingPath = "/v1beta/models"
+
 // isListingPath reports whether reqPath asks for a MODEL LISTING, as opposed
 // to the other model-less endpoints. Only a listing gets an upstream redirect
 // and a policy bound: the connection-warming probe carries no model list to
 // filter, and rewriting its host would send the warm-up to the wrong pool.
 func isListingPath(reqPath string) bool {
-	return reqPath == modelListingPath || isBedrockModelLessPath(reqPath)
+	return reqPath == modelListingPath || reqPath == geminiModelListingPath || isBedrockModelLessPath(reqPath)
 }
 
 // isModelLessPath reports whether reqPath is a known non-inference endpoint
@@ -512,23 +522,31 @@ func isListingPath(reqPath string) bool {
 // "/v1/models/{id}" lookup is deliberately excluded — it names a model, so
 // it is authorised against the model table instead (see modelDetailID).
 func isModelLessPath(reqPath string) bool {
-	return reqPath == modelListingPath || reqPath == connectionWarmPath
+	return reqPath == modelListingPath || reqPath == geminiModelListingPath || reqPath == connectionWarmPath
 }
 
-// modelDetailID returns the model id named by a "/v1/models/{id}" lookup.
+// modelDetailID returns the model id named by a "/v1/models/{id}" or
+// "/v1beta/models/{id}" lookup.
 // reqPath comes from url.URL.Path, which is already percent-decoded, so an
 // id carrying a "/" (a self-hosted "Qwen/Qwen2.5-0.5B-Instruct" sent as
 // "Qwen%2FQwen2.5-...") arrives whole and everything after the prefix is the
 // id, separators included.
 func modelDetailID(reqPath string) (string, bool) {
-	if !strings.HasPrefix(reqPath, modelListingPath+"/") {
-		return "", false
+	if strings.HasPrefix(reqPath, modelListingPath+"/") {
+		id := strings.TrimPrefix(reqPath, modelListingPath+"/")
+		if id != "" {
+			return id, true
+		}
 	}
-	id := strings.TrimPrefix(reqPath, modelListingPath+"/")
-	if id == "" {
-		return "", false
+	if strings.HasPrefix(reqPath, geminiModelListingPath+"/") {
+		id := strings.TrimPrefix(reqPath, geminiModelListingPath+"/")
+		// An action endpoint like /v1beta/models/gemini-1.5-flash:generateContent
+		// is an inference request, not a model detail lookup.
+		if id != "" && !strings.Contains(id, ":") {
+			return id, true
+		}
 	}
-	return id, true
+	return "", false
 }
 
 // isBedrockModelLessPath reports whether reqPath is a Bedrock
@@ -726,11 +744,23 @@ func (m *Middleware) matchModelless(reqPath, method string, userGroups []string)
 		} else {
 			eligible = func(r ProviderRoute) bool { return r.Bedrock }
 		}
+	case reqPath == geminiModelListingPath:
+		eligible = func(r ProviderRoute) bool {
+			return !r.Vertex && !r.Bedrock && (routeSupportsVendor(r, "gemini") || (r.Vendor == "" && len(r.Vendors) == 0))
+		}
 	case isModelLessPath(reqPath):
 		// Vertex/Bedrock are path-routed and don't serve OpenAI-style
 		// model-listing endpoints; including them here could rewrite a
 		// GET /v1/models to an upstream that 404s it.
-		eligible = func(r ProviderRoute) bool { return !r.Vertex && !r.Bedrock }
+		eligible = func(r ProviderRoute) bool {
+			if r.Vertex || r.Bedrock {
+				return false
+			}
+			if r.Vendor == "gemini" && len(r.Vendors) == 0 {
+				return false
+			}
+			return true
+		}
 	default:
 		return ProviderRoute{}, matchOutcomeUnknownModel
 	}
@@ -887,6 +917,11 @@ func routeClaimsModel(route ProviderRoute, model string) bool {
 		// another — and with several such routes, ordering would decide which.
 		if candidate == llm.NormalizeAnthropicModel(candidate) &&
 			candidate == llm.NormalizeAnthropicModel(model) {
+			return true
+		}
+		// Gemini candidate normalisation: e.g. "models/gemini-1.5-flash-latest" vs "gemini-1.5-flash".
+		if (routeSupportsVendor(route, "gemini") || route.Vendor == "gemini") &&
+			llm.NormalizeGeminiModel(candidate) == llm.NormalizeGeminiModel(model) {
 			return true
 		}
 	}

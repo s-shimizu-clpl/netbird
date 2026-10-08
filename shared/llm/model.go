@@ -151,3 +151,26 @@ func NormalizeVertexModel(modelID string) string {
 	}
 	return modelID
 }
+
+// geminiVersionSuffix matches the trailing release suffix of a Gemini model id,
+// such as "-001", "-002", or "-latest".
+var geminiVersionSuffix = regexp.MustCompile(`(?i)^(gemini-.*?)(?:-\d{3}|-latest)$`)
+
+// NormalizeGeminiModel strips the "models/" or "publishers/google/models/" resource
+// path prefix, an "@version" suffix, and any trailing release suffix (e.g. "-001")
+// from a Gemini model id so it matches the catalog/pricing key.
+func NormalizeGeminiModel(modelID string) string {
+	m := modelID
+	if strings.HasPrefix(m, "publishers/google/models/") {
+		m = strings.TrimPrefix(m, "publishers/google/models/")
+	} else if strings.HasPrefix(m, "models/") {
+		m = strings.TrimPrefix(m, "models/")
+	}
+	if at := strings.Index(m, "@"); at >= 0 {
+		m = m[:at]
+	}
+	if sub := geminiVersionSuffix.FindStringSubmatch(m); len(sub) == 2 {
+		return sub[1]
+	}
+	return m
+}

@@ -26,11 +26,12 @@ type denyResponse struct {
 	Error      *providerError    `json:"error,omitempty"`
 }
 
-// providerError is the nested error object both vendor envelopes carry.
+// providerError is the nested error object vendor envelopes carry.
 type providerError struct {
-	Type    string `json:"type"`
+	Type    string `json:"type,omitempty"`
 	Message string `json:"message,omitempty"`
-	Code    string `json:"code,omitempty"`
+	Code    any    `json:"code,omitempty"`
+	Status  string `json:"status,omitempty"`
 }
 
 // Vendor error types keyed by HTTP status, per each provider's published
@@ -60,8 +61,29 @@ func providerEnvelope(surface, code, message string, status int) (string, *provi
 			Message: message,
 			Code:    code,
 		}
+	case "gemini":
+		return "", &providerError{
+			Code:    status,
+			Message: message,
+			Status:  geminiErrorStatus(status),
+		}
 	default:
 		return "", nil
+	}
+}
+
+func geminiErrorStatus(status int) string {
+	switch status {
+	case http.StatusBadRequest:
+		return "INVALID_ARGUMENT"
+	case http.StatusForbidden:
+		return "PERMISSION_DENIED"
+	case http.StatusNotFound:
+		return "NOT_FOUND"
+	case http.StatusTooManyRequests:
+		return "RESOURCE_EXHAUSTED"
+	default:
+		return "INTERNAL"
 	}
 }
 
